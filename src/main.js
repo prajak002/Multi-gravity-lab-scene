@@ -60,6 +60,26 @@ async function getRobot(id) {
   return loaded;
 }
 
+/**
+ * Show a load failure instead of sitting on the splash forever.
+ *
+ * enter() is async and nothing awaited it, so a rejected URDF load became an
+ * unhandled rejection: the console had the reason, but the page just said
+ * "loading" indefinitely. On a deploy where the meshes are missing entirely
+ * that is the only symptom the user ever sees.
+ */
+function showFailure(err) {
+  boot.classList.remove('gone');
+  boot.innerHTML = '';
+  const box = document.createElement('div');
+  box.className = 'boot-error';
+  box.innerHTML = `<b>Could not load the robot</b><pre></pre>
+    <span>Check that <code>public/robots/</code> was deployed \u2014 the meshes are
+    fetched at runtime, so an ignored asset folder fails exactly like this.</span>`;
+  box.querySelector('pre').textContent = String(err && err.message || err);
+  boot.appendChild(box);
+}
+
 function setTerrain(nextEnv) {
   if (terrain) { stage.world.remove(terrain); terrain.geometry.dispose(); terrain.material.dispose(); }
   terrain = buildTerrain(nextEnv);
@@ -138,7 +158,7 @@ async function enter({ robot: robotId, env: envId, motion: motionId = 'walk' }) 
   setTimeout(() => stage.flyTo(SHOTS.chase, 3.4), 1300);
 }
 
-const lobby = new Lobby(uiRoot, enter);
+const lobby = new Lobby(uiRoot, (sel) => { enter(sel).catch(showFailure); });
 
 // Shot keys — the same rig, so every one of these is a move rather than a cut.
 addEventListener('keydown', (e) => {

@@ -1,11 +1,15 @@
 node_modules/
 dist/
 vendor/
-public/robots/
 shots/
 .venv/
 __pycache__/
 *.pyc
+
+# NOTE: public/robots/ is deliberately NOT ignored. The URDF meshes are fetched
+# at runtime, so leaving them out of the repo deploys an app that sits on the
+# splash screen forever — which is exactly what happened on the first Vercel
+# deploy.
 
 # Source footage and pipeline intermediates. The Apollo reel alone is 102 MB —
 # past GitHub's hard 100 MB per-file limit — and none of it is source: it is

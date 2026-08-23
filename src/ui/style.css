@@ -134,3 +134,17 @@ body {
 
 .card.off { opacity: 0.30; }
 .card.off:hover { border-color: var(--line); background: rgba(255,255,255,0.015); }
+
+.boot-error {
+  max-width: 560px; padding: 22px 26px; text-align: left;
+  border: 1px solid rgba(255,120,120,0.35); border-radius: 3px;
+  background: rgba(30,10,12,0.6); color: var(--ink);
+  letter-spacing: normal; text-transform: none; font-size: 12px;
+}
+.boot-error b { display: block; margin-bottom: 10px; color: #ff9a9a; font-size: 13px; }
+.boot-error pre {
+  margin: 0 0 12px; white-space: pre-wrap; word-break: break-word;
+  color: var(--dim); font-size: 11px; line-height: 1.5;
+}
+.boot-error span { color: var(--dim); font-size: 11px; line-height: 1.5; }
+.boot-error code { color: var(--ink); }
