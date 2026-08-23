@@ -1,0 +1,136 @@
+:root {
+  --ink: #e8ecf2;
+  --dim: #8794a6;
+  --line: rgba(150, 172, 200, 0.20);
+  --panel: rgba(9, 13, 20, 0.86);
+  --accent: #35e0a1;
+  --lobby-w: 380px;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #05070b; overflow: hidden; }
+body {
+  font: 13px/1.45 ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--ink);
+  -webkit-font-smoothing: antialiased;
+}
+#stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+#ui { position: fixed; inset: 0; pointer-events: none; }
+#ui > * { pointer-events: auto; }
+
+#boot {
+  position: fixed; inset: 0; display: grid; place-items: center;
+  background: #05070b; color: var(--dim); letter-spacing: 0.3em;
+  text-transform: uppercase; font-size: 11px; z-index: 50;
+  transition: opacity 600ms ease; 
+}
+#boot.gone { opacity: 0; pointer-events: none; }
+
+/* ---- lobby: enters from the left ------------------------------------- */
+.lobby {
+  position: fixed; top: 0; left: 0; bottom: 0; width: var(--lobby-w);
+  background: var(--panel);
+  backdrop-filter: blur(18px) saturate(1.3);
+  border-right: 1px solid var(--line);
+  padding: 26px 22px;
+  overflow-y: auto;
+  display: flex; flex-direction: column; gap: 22px;
+  /* the transition the brief asks for: the lobby arrives from off-screen left */
+  transform: translateX(calc(-1 * var(--lobby-w) - 24px));
+  transition: transform 720ms cubic-bezier(0.16, 0.84, 0.24, 1);
+  will-change: transform;
+  z-index: 20;
+}
+.lobby.in { transform: translateX(0); }
+
+.lobby h1 { font-size: 15px; margin: 0; letter-spacing: 0.16em; text-transform: uppercase; }
+.lobby h1 small { display: block; color: var(--dim); font-size: 10px; letter-spacing: 0.22em; margin-top: 5px; }
+.group { display: flex; flex-direction: column; gap: 7px; }
+.group > label {
+  color: var(--dim); font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+}
+.card {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 10px 12px; border: 1px solid var(--line); border-radius: 3px;
+  background: rgba(255,255,255,0.015); color: var(--ink);
+  cursor: pointer; text-align: left; font: inherit;
+  transition: border-color 180ms ease, background 180ms ease, transform 180ms ease;
+}
+.card:hover { border-color: rgba(150,172,200,0.42); background: rgba(255,255,255,0.045); }
+.card.on { border-color: var(--accent); background: rgba(53,224,161,0.10); }
+.card b { font-weight: 600; letter-spacing: 0.06em; font-size: 12px; }
+.card span { color: var(--dim); font-size: 10.5px; line-height: 1.35; }
+.card .row { display: flex; justify-content: space-between; gap: 10px; }
+.card .row em { font-style: normal; color: var(--accent); font-size: 10px; }
+
+.enter {
+  margin-top: auto; padding: 13px; border: 0; border-radius: 3px;
+  background: var(--accent); color: #04140d; font: inherit; font-weight: 700;
+  letter-spacing: 0.18em; text-transform: uppercase; cursor: pointer;
+}
+.enter:hover { filter: brightness(1.09); }
+
+.lobby-tab {
+  position: fixed; left: 0; top: 50%; transform: translateY(-50%);
+  z-index: 19; padding: 16px 9px; cursor: pointer;
+  background: var(--panel); border: 1px solid var(--line); border-left: 0;
+  border-radius: 0 3px 3px 0; color: var(--dim);
+  writing-mode: vertical-rl; letter-spacing: 0.22em; font-size: 10px;
+  text-transform: uppercase;
+}
+.lobby-tab:hover { color: var(--ink); }
+
+/* ---- readout --------------------------------------------------------- */
+.hud {
+  position: fixed; right: 20px; top: 20px; width: 232px;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
+  padding: 14px 15px; opacity: 0; transition: opacity 500ms ease;
+}
+.hud.in { opacity: 1; }
+.hud h2 { margin: 0 0 10px; font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--dim); }
+.hud dl { margin: 0; display: grid; grid-template-columns: 1fr auto; gap: 5px 10px; }
+.hud dt { color: var(--dim); font-size: 11px; }
+.hud dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; font-size: 11px; }
+.hud dd u { text-decoration: none; color: var(--dim); font-size: 9px; margin-left: 3px; }
+
+.title-card {
+  position: fixed; left: 50%; bottom: 46px; transform: translateX(-50%);
+  text-align: center; opacity: 0; transition: opacity 700ms ease;
+}
+.title-card.in { opacity: 1; }
+.title-card b { display: block; font-size: 17px; letter-spacing: 0.3em; text-transform: uppercase; }
+.title-card span { color: var(--dim); font-size: 10px; letter-spacing: 0.24em; text-transform: uppercase; }
+
+/* ---- comparison dashboard -------------------------------------------- */
+.dash {
+  position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+  background: var(--panel); border: 1px solid var(--line); border-radius: 3px;
+  padding: 10px 14px; opacity: 0; transition: opacity 400ms ease; z-index: 12;
+}
+.dash.in { opacity: 1; }
+.dash-table { border-collapse: collapse; font-size: 11px; }
+.dash-table th {
+  color: var(--dim); font-weight: 500; text-transform: uppercase;
+  letter-spacing: 0.14em; font-size: 9px; padding: 0 11px 6px; text-align: right;
+}
+.dash-table th:first-child, .dash-table td:first-child { text-align: left; }
+.dash-table td {
+  padding: 3px 11px; text-align: right; font-variant-numeric: tabular-nums;
+  border-top: 1px solid rgba(150,172,200,0.10);
+}
+.dash-table td:first-child { color: var(--accent); font-weight: 600; }
+
+.dash-labels { position: fixed; inset: 0; opacity: 0; transition: opacity 400ms ease; z-index: 11; }
+.dash-labels.in { opacity: 1; }
+.dash-label {
+  position: absolute; padding: 7px 11px;
+  background: rgba(9,13,20,0.72); border: 1px solid var(--line); border-radius: 2px;
+}
+.dash-label b { display: block; font-size: 11px; letter-spacing: 0.2em; }
+.dash-label span { color: var(--dim); font-size: 10px; font-variant-numeric: tabular-nums; }
+.dash-label:nth-child(1) { left: 18px; top: 18px; }
+.dash-label:nth-child(2) { right: 18px; top: 18px; }
+.dash-label:nth-child(3) { left: 18px; top: calc(50% + 18px); }
+.dash-label:nth-child(4) { right: 18px; top: calc(50% + 18px); }
+
+.card.off { opacity: 0.30; }
+.card.off:hover { border-color: var(--line); background: rgba(255,255,255,0.015); }
