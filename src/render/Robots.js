@@ -18,21 +18,35 @@ import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
 export const ROBOTS = [
   {
     id: 'g1', name: 'Unitree G1', short: 'G1', kind: 'biped',
-    url: 'robots/g1/g1_23dof.urdf',
-    blurb: '23 DoF humanoid, 1.32 m. The retarget target.',
+    // 29 DoF, not the 23 DoF variant. The motion packets are authored on the
+    // 29 DoF G1 and their CSV column order IS this URDF's joint order; the
+    // 23 DoF description welds waist roll/pitch and wrist pitch/yaw, which
+    // silently dropped six of the packets' channels and put the shoulders up
+    // to 65 mm from where the packet says they are. On this description the
+    // packets' own body_pos_w reproduces to 0.0 mm (tools/audit_packets.mjs).
+    url: 'robots/g1/g1_29dof.urdf',
+    blurb: '29 DoF humanoid, 1.32 m. The retarget target.',
     // Named, never positional: these three descriptions order their leg chains
     // differently, and indexing by position quietly drives the wrong joint.
     legs: {
+      // ankleRoll matters: without it the sole is held level while the ground
+      // is not, so on any real DEM one edge of the foot is buried and the
+      // opposite one is in the air. It is the joint that lets a foot LIE on
+      // rough ground rather than spear into it.
       left:  { hipPitch: 'left_hip_pitch_joint',  hipRoll: 'left_hip_roll_joint',
-               knee: 'left_knee_joint',  anklePitch: 'left_ankle_pitch_joint' },
+               knee: 'left_knee_joint',  anklePitch: 'left_ankle_pitch_joint',
+               ankleRoll: 'left_ankle_roll_joint' },
       right: { hipPitch: 'right_hip_pitch_joint', hipRoll: 'right_hip_roll_joint',
-               knee: 'right_knee_joint', anklePitch: 'right_ankle_pitch_joint' },
+               knee: 'right_knee_joint', anklePitch: 'right_ankle_pitch_joint',
+               ankleRoll: 'right_ankle_roll_joint' },
     },
     arms: {
       left:  { shoulderPitch: 'left_shoulder_pitch_joint',  shoulderRoll: 'left_shoulder_roll_joint',  elbow: 'left_elbow_joint' },
       right: { shoulderPitch: 'right_shoulder_pitch_joint', shoulderRoll: 'right_shoulder_roll_joint', elbow: 'right_elbow_joint' },
     },
     waistYaw: 'waist_yaw_joint',
+    waistRoll: 'waist_roll_joint',
+    waistPitch: 'waist_pitch_joint',
     feet: ['left_ankle_roll_link', 'right_ankle_roll_link'],
   },
   {

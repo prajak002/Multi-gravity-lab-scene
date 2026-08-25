@@ -10,6 +10,7 @@ import { ENVIRONMENTS, byId, sunDir, gRatio, G_EARTH } from './render/Environmen
 import { ROBOTS, robotById, loadRobot } from './render/Robots.js';
 import { buildTerrain } from './render/Terrain.js';
 import { loadInterior } from './render/Interior.js';
+import { plantOnSoles, conformAnkles, penetration } from './sim/Footing.js';
 import { buildRocks } from './render/Rocks.js';
 import { Gait } from './sim/Gait.js';
 import { Dust } from './render/Dust.js';
@@ -31,6 +32,9 @@ stage.scene.add(dust.points);
 const robotCache = new Map();     // id -> loaded robot (URDF loads are expensive)
 let terrain = null;
 let interior = null;
+// Set when an interior is loaded: the corridor's own measured geometry, which
+// is what the ISS run is flown down instead of an open-course heading.
+let tube = null;
 let rocks = null;
 let current = null;               // { def, root, robot, joints, height }
 let gait = null;
@@ -95,9 +99,23 @@ function setTerrain(nextEnv) {
 /** Swap the module interior in and out. Only the ISS declares one. */
 async function setInterior(nextEnv) {
   if (interior) { stage.world.remove(interior); interior = null; }
+  tube = null;
+  stage.setInterior(null);
   if (!nextEnv.interior) return;
   interior = await loadInterior(nextEnv.interior);
-  if (interior) stage.world.add(interior);
+  if (!interior) return;
+  stage.world.add(interior);
+  // The corridor is 43.8 m of real module. How far the robot may swim before
+  // it wraps comes from the asset rather than from a constant that was a guess
+  // about a different asset — leave a margin at each end so it turns around
+  // inside the tube rather than in the end wall.
+  tube = {
+    axis: interior.userData.axis,
+    length: Math.max(4, (interior.userData.length || 14) - 6),
+    width: interior.userData.width || 7,
+    height: interior.userData.height || 4,
+  };
+  stage.setInterior(tube);
 }
 
 async function enter({ robot: robotId, env: envId, motion: motionId = 'walk' }) {
@@ -138,6 +156,12 @@ async function enter({ robot: robotId, env: envId, motion: motionId = 'walk' }) 
   // perpendicular to the sun azimuth removes the choice: one side is lit for
   // the entire run, and the camera can simply stay there.
   courseHeading = (env.sunAz - 90) * Math.PI / 180;
+  // ...except inside a module, where the corridor decides. A heading taken
+  // from the sun azimuth sent the ISS run off at 110 degrees to the tube, so
+  // the robot swam straight out through the wall within a few seconds and
+  // finished the traverse alone against the stars — which is the exact
+  // reference the interior exists to provide.
+  if (tube) courseHeading = tube.axis === 'x' ? 0 : Math.PI / 2;
   stage.side = 1;
 
   if (dashboard.panes.length) dashboard.dispose();
@@ -166,6 +190,14 @@ addEventListener('keydown', (e) => {
   if (map[e.key]) stage.flyTo(map[e.key], 2.0);
   if (e.key.toLowerCase() === 'l') lobby.show();
   if (e.key.toLowerCase() === 'd') toggleDashboard();
+  // EMERGENCY STOP for the swim stroke. Escape, and also the space bar,
+  // because the two keys a person reaches for under stress are the big one and
+  // the one that means "stop" everywhere else. It latches: the stroke decays
+  // to the neutral streamline pose over 0.8 s and stays there until the motion
+  // is re-selected. Nothing un-stops it by accident.
+  if (e.key === 'Escape' || e.key === ' ') {
+    if (gait?.butterfly && !gait.estopped) { gait.estop('operator'); e.preventDefault(); }
+  }
 });
 
 function toggleDashboard() {
@@ -183,30 +215,25 @@ const contactAt = new Vector3();
 const travelDir = new Vector3();
 let elapsed = 0;
 let lastAlong = 0;
+let footing = { contact: null, lift: 0, clearance: 0 };
+// True while the swimmer is laid flat down the module, which changes where
+// the camera should aim.
+let prone = false;
 // per-foot swing state, so a landing is detected as a transition rather than
 // fired every frame the foot happens to be down
 let wasSwinging = [];
 let last = performance.now();
 
 /**
- * Plant the robot by MEASUREMENT.
+ * Plant the robot on its soles, against the ground under each contact point.
  *
- * The model's origin was put on its soles in the neutral pose, but once the
- * joints move the lowest foot is somewhere else entirely — which is why a
- * pose-driven robot appears to hover. Measure where the feet actually ended
- * up, then lift the root so the lowest one rests on the terrain, and add the
- * flight arc on top of that.
+ * The measurement lives in Footing.js; see the note there for why the previous
+ * version — one terrain sample under the root, lowest world-AABB corner of the
+ * foot — both sank the feet on rising ground and floated them on falling
+ * ground. Nothing here samples the terrain under the pelvis any more.
  */
-function plant(loaded, groundY, hop) {
-  loaded.root.updateMatrixWorld(true);
-  let lowest = Infinity;
-  for (const foot of loaded.feet) {
-    footBox.setFromObject(foot);
-    if (footBox.min.y < lowest) lowest = footBox.min.y;
-  }
-  if (!isFinite(lowest)) return;                 // no feet declared: leave as placed
-  loaded.root.position.y += (groundY - lowest) + hop;
-  loaded.root.updateMatrixWorld(true);
+function plant(loaded, hop) {
+  return plantOnSoles(loaded, terrain ? (x, z) => terrain.heightAt(x, z) : null, hop);
 }
 
 function frame(now) {
@@ -274,7 +301,7 @@ function frame(now) {
     // fall swims the robot straight out through the wall and leaves it alone
     // against the stars, which is exactly the reference the interior exists to
     // provide. Keep an orbital run inside the module.
-    const courseLen = terrain ? COURSE_LENGTH : ISS_COURSE;
+    const courseLen = terrain ? COURSE_LENGTH : (tube ? tube.length : ISS_COURSE);
     const along = travelled % courseLen;
     if (along < lastAlong) { dust.clear(); stage.cut(stage.shot); }   // wrapped
     lastAlong = along;
@@ -309,11 +336,50 @@ function frame(now) {
     }
     // On the ISS there is no floor to stand on, so nothing is planted; the
     // body simply drifts and rotates about its own centre of mass.
-    if (terrain) plant(current, groundY, pose.bodyY);
+    if (terrain) {
+      // Conform BEFORE planting: the ankles decide the sole's attitude, and
+      // the plant then finds the lowest point of the sole in that attitude.
+      // The other order plants a level foot and then tilts it into the ground.
+      conformAnkles(current, pose, (x, z) => terrain.heightAt(x, z));
+      footing = plant(current, pose.bodyY);
+    }
     // Free fall: nothing to plant against, so the body just drifts. The camera
     // has to follow it up there — aiming at a ground plane that does not exist
     // leaves the robot out of frame.
-    else current.root.position.y = FREE_FALL_Y + Math.sin(travelled * 0.35) * 0.45;
+    else {
+      // Drift about the tube's centreline, with the swing scaled to the
+      // cross-section so the robot never rises through the ceiling or sinks
+      // through the floor of a module it is supposed to be inside.
+      const swing = tube ? Math.min(0.45, tube.height * 0.5 - current.height * 0.75) : 0.45;
+      current.root.position.y = FREE_FALL_Y + Math.sin(travelled * 0.35) * Math.max(0, swing);
+
+      // Lay a swimmer DOWN.
+      //
+      // pose.pitch was being computed by the stroke and then dropped on the
+      // floor: nothing outside the terrain branch ever read it, so the G1 did
+      // the entire butterfly bolt upright, arms overhead, travelling sideways
+      // down the corridor like someone doing star jumps in a lift.
+      //
+      // A swimmer's spine is horizontal and along the direction of travel. The
+      // model's spine is its local +Y and its face is its local +X, and with
+      // rotation order YZX the yaw is applied first, so a rotation of -90
+      // degrees about the resulting Z takes +Y onto the travel axis and +X
+      // face-down. The stroke's own undulation rides on top of that.
+      prone = currentMotion === 'swim' && pose.airborne;
+      if (prone) {
+        current.root.rotation.order = 'YZX';
+        current.root.rotation.z = -Math.PI / 2 + (pose.pitch || 0);
+        current.root.position.x -= Math.cos(theta) * current.height * 0.5;
+        current.root.position.z -= Math.sin(theta) * current.height * 0.5;
+        // Rotating about the root, which sits on the soles, swings the whole
+        // body out along the travel axis; slide it back so the middle of the
+        // robot is on the tube's centreline rather than its feet. Only along
+        // the axis — the rotation lays the body flat, so it needs no lift, and
+        // lifting it here put the swimmer's back through the ceiling.
+      } else {
+        current.root.rotation.z = 0;
+      }
+    }
 
     // Touchdown -> dust. Each foot is measured where it actually is, so the
     // plume starts at the contact point rather than under the body's origin.
@@ -334,7 +400,12 @@ function frame(now) {
       }
     }
 
-    subject.set(x, (terrain ? groundY : current.root.position.y) + current.height * 0.55, z);
+    // Aim at the middle of the body. Standing, that is a bit over half its
+    // height above the ground; lying flat down a corridor, the body IS the
+    // centreline and the same offset aims the camera at the ceiling above it.
+    const aimY = (terrain ? groundY + current.height * 0.55
+                          : current.root.position.y + (prone ? 0 : current.height * 0.55));
+    subject.set(x, aimY, z);
     stage.update(dt, subject, theta);
 
     const T = gait.stepPeriod(env.g);
@@ -347,7 +418,26 @@ function frame(now) {
     hud.row('duty', 'duty factor', pose.duty.toFixed(2), '');
     hud.row('gait', 'gait', currentMotion, '');
     hud.row('slope', 'slope', (hudSlope * 180 / Math.PI).toFixed(1), '°');
+    if (terrain) {
+      // Two numbers that used to be invisible: which end of the sole is
+      // carrying, and how far the deepest contact point is below the ground.
+      // The second must read 0.0 mm; anything else is a foot in the floor.
+      hud.row('ct', 'sole contact', footing.contact || '—', '');
+      hud.row('pen', 'sole into ground',
+        (penetration(current, (x, z) => terrain.heightAt(x, z)) * 1000).toFixed(1), 'mm');
+    }
     hud.row('src', 'source', motionLabel, '');
+    if (pose.stroke) {
+      // The stroke's own state, so the amplitude ramp and the emergency stop
+      // are visible rather than something to take on trust.
+      const k = pose.stroke;
+      hud.row('bf', 'stroke', k.estopped ? 'E-STOP' : 'butterfly', '');
+      hud.row('bfa', 'amplitude', (k.amplitude * 100).toFixed(0), '%');
+      hud.row('bff', 'stroke rate', k.frequency.toFixed(2), 'Hz');
+    } else {
+      hud.dropRow('bf'); hud.dropRow('bfa'); hud.dropRow('bff');
+    }
+    if (!terrain) { hud.dropRow('ct'); hud.dropRow('pen'); }
     hud.row('vs', 'vs 1 g', `×${(gait.stepPeriod(G_EARTH) > 0 ? T / gait.stepPeriod(G_EARTH) : 1).toFixed(2)}`, '');
   }
 
@@ -362,9 +452,25 @@ function frame(now) {
 
 // Debug handle: lets a headless check compare the robot's facing against its
 // actual displacement, rather than eyeballing a screenshot.
+// Camera handle for headless framing checks.
+window.__stage = stage;
+
 window.__arena = {
   get robot() { return current; },
   get heading() { return courseHeading; },
+  get env() { return env; },
+  get tube() { return tube; },
+  get footing() { return footing; },
+  get stroke() { return gait?.butterfly ? {
+    estopped: gait.estopped, t: gait.swimT, cfg: gait.butterfly.cfg } : null; },
+  estop: () => gait?.estop('headless-check'),
+  /**
+   * How far the deepest sole contact point is below the ground, in mm.
+   * This is the number "the feet do not go under the ground" reduces to, so
+   * it is exported rather than left to a screenshot.
+   */
+  penetrationMM: () => (terrain && current
+    ? penetration(current, (x, z) => terrain.heightAt(x, z)) * 1000 : 0),
 };
 
 /** Terrain gradient by central difference — dh/dx, dh/dz. */

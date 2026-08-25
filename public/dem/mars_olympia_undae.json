@@ -1,0 +1,32 @@
+{
+  "site": "Olympia Undae — north polar dune sea",
+  "source": "hrsc_mola_200m",
+  "source_url": "https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/Mars/HRSC_MOLA_Blend/Mars_HRSC_MOLA_BlendDEM_Global_200mp_v2.tif",
+  "citation": "ESA Mars Express HRSC + NASA MGS MOLA blended global DEM, 200 m/px, v2",
+  "body": "Mars",
+  "covers": "global",
+  "native_mpp": 200,
+  "mpp": 4,
+  "size_px": 512,
+  "span_m": 2048,
+  "lat": 80.78022745565593,
+  "lon": 177.57577884853958,
+  "centre_elev_m": -4409,
+  "grid": "azimuthal equidistant about the site, resampled bilinear",
+  "resolution_note": "source product is 200 m/px; this 512px grid at 4 m/px spans 10.2 source posts and is a 50x bilinear resampling of them — interpolation, not added detail",
+  "dtype": "float32",
+  "layout": "row-major, north-up, +x east / +y north",
+  "stats": {
+    "mean_slope": 3.1690131254423024,
+    "p95_slope": 10.024987862075742,
+    "max_slope": 15.616129405024543,
+    "plane_slope": 0.2648168650304774,
+    "plane_aspect": 89.9599171600869,
+    "roughness_rms": 6.1213955666781015,
+    "relief": 34,
+    "mean_elev": -4414.467994689941
+  },
+  "note": "Deep sand. The DEM gives the dune field's regional grade; the ripple geometry the foot sinks into is the synthetic layer.",
+  "dem_samples_across": 10.24,
+  "upsample": 50
+}

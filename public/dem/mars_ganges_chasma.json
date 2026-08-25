@@ -1,0 +1,32 @@
+{
+  "site": "Ganges Chasma — Valles Marineris wall",
+  "source": "hrsc_mola_200m",
+  "source_url": "https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/Mars/HRSC_MOLA_Blend/Mars_HRSC_MOLA_BlendDEM_Global_200mp_v2.tif",
+  "citation": "ESA Mars Express HRSC + NASA MGS MOLA blended global DEM, 200 m/px, v2",
+  "body": "Mars",
+  "covers": "global",
+  "native_mpp": 200,
+  "mpp": 4,
+  "size_px": 512,
+  "span_m": 2048,
+  "lat": -7.86240377966821,
+  "lon": 311.67105329112474,
+  "centre_elev_m": -3327,
+  "grid": "azimuthal equidistant about the site, resampled bilinear",
+  "resolution_note": "source product is 200 m/px; this 512px grid at 4 m/px spans 10.2 source posts and is a 50x bilinear resampling of them — interpolation, not added detail",
+  "dtype": "float32",
+  "layout": "row-major, north-up, +x east / +y north",
+  "stats": {
+    "mean_slope": 13.164632940157587,
+    "p95_slope": 27.93835272960235,
+    "max_slope": 35.264389682754654,
+    "plane_slope": 10.709580321490495,
+    "plane_aspect": 42.99957776022547,
+    "roughness_rms": 56.03141743042002,
+    "relief": 776,
+    "mean_elev": -3270.674919128418
+  },
+  "note": "Steep descent by switchback. Chosen for the steepest wall section the scan can find.",
+  "dem_samples_across": 10.24,
+  "upsample": 50
+}

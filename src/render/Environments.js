@@ -53,7 +53,10 @@ export const ENVIRONMENTS = [
     skyColor: new Color(0.0, 0.0, 0.0), ambientIntensity: 0.05,
     groundAlbedo: new Color(0.30, 0.30, 0.32),
     terrain: null,                                   // no ground at all
-    interior: 'env/iss_station.glb',                 // module interior to float inside
+    // The corridor from Corridor.blend: a real 43.8 x 7.2 x 4.0 m module,
+    // modelled in metres, so it is loaded at its own scale and the robot is
+    // the size it says it is against the wall behind it.
+    interior: { url: 'env/iss_corridor.glb', metric: true },
     fogDensity: 0.0, stars: 1.0,
     dust: { drag: 0.0, life: 9.0, size: 0.03, color: new Color(0.6, 0.6, 0.62) },
     exposure: 0.95,

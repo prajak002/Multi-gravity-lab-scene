@@ -1,0 +1,32 @@
+{
+  "site": "Aristarchus Plateau — blocky ejecta and scarps",
+  "source": "lolakaguya_59m",
+  "source_url": "https://asc-pds-services.s3.us-west-2.amazonaws.com/mosaic/LolaKaguya_Topo/Lunar_LRO_LOLAKaguya_DEMmerge_60N60S_512ppd.tif",
+  "citation": "NASA LRO LOLA + JAXA Kaguya TC merged DEM, 512 ppd (~59 m/px)",
+  "body": "Moon",
+  "covers": "60 N – 60 S",
+  "native_mpp": 59.225,
+  "mpp": 4,
+  "size_px": 512,
+  "span_m": 2048,
+  "lat": 23.85798846497218,
+  "lon": -47.1071696265838,
+  "centre_elev_m": -2834,
+  "grid": "azimuthal equidistant about the site, resampled bilinear",
+  "resolution_note": "source product is 59.225 m/px; this 512px grid at 4 m/px spans 34.6 source posts and is a 15x bilinear resampling of them — interpolation, not added detail",
+  "dtype": "float32",
+  "layout": "row-major, north-up, +x east / +y north",
+  "stats": {
+    "mean_slope": 17.62077113084522,
+    "p95_slope": 32.005383208083494,
+    "max_slope": 45,
+    "plane_slope": 11.494584585770669,
+    "plane_aspect": 53.415966473105634,
+    "roughness_rms": 74.17832768136746,
+    "relief": 530.5,
+    "mean_elev": -2950.8811206817627
+  },
+  "note": "Obstacle geometry: high-step, side-step, pivot, edge contouring.",
+  "dem_samples_across": 34.579991557619245,
+  "upsample": 14.80625
+}

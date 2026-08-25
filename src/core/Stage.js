@@ -180,10 +180,36 @@ export class Stage {
     return other > keep + 0.35 ? -this.side : this.side;
   }
 
+  /**
+   * Confine the camera to a module interior, or release it with null.
+   *
+   * The four shots are written for open ground: `establish` sits 8.5 m to the
+   * side and 4.2 m up. A corridor is 7.2 m wide and 4.0 m tall, so every one
+   * of them puts the camera through a wall — and since the shell is a closed
+   * mesh, what you get is the OUTSIDE of the module against the stars and no
+   * robot at all. Clamping the solved position into the cross-section keeps
+   * each shot's intent (which side, how far along, how high) and gives up only
+   * the part that cannot be honoured indoors.
+   */
+  setInterior(tube) { this.tube = tube || null; }
+
+  _clampToTube(p) {
+    const t = this.tube;
+    if (!t) return p;
+    const STANDOFF = 0.35;                          // clear of the wall panels
+    const hw = Math.max(0.2, t.width / 2 - STANDOFF);
+    const hh = Math.max(0.2, t.height / 2 - STANDOFF);
+    p.y = MathUtils.clamp(p.y, -hh, hh);
+    if (t.axis === 'x') p.z = MathUtils.clamp(p.z, -hw, hw);
+    else p.x = MathUtils.clamp(p.x, -hw, hw);
+    return p;
+  }
+
   update(dt, subject, heading = 0) {
     this.subject.lerp(subject, 1 - Math.exp(-9 * dt));
     this.orbit = heading;
     this._solve(this.shot, this._p, this._a);
+    this._clampToTube(this._p);
 
     if (this.blend < 1) {
       this.blend = Math.min(1, this.blend + dt / this.blendDur);
@@ -198,6 +224,9 @@ export class Stage {
       this.curPos.lerp(this._p, 1 - Math.exp(-5.5 * dt));
       this.curAim.lerp(this._a, 1 - Math.exp(-7.0 * dt));
     }
+    // Clamp the BLENDED position too: a fly-to that interpolates between two
+    // legal points can still bow outside the tube on the way across.
+    this._clampToTube(this.curPos);
     this.camera.position.copy(this.curPos);
     this.camera.lookAt(this.curAim);
     this.sun.target.position.copy(this.subject);

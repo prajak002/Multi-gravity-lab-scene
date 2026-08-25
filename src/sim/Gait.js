@@ -19,6 +19,7 @@
  * so the app does not care which is driving.
  */
 import { G_EARTH } from '../render/Environments.js';
+import { Butterfly, DEFAULTS as BF_DEFAULTS } from './Butterfly.js';
 
 const TAU = Math.PI * 2;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -35,7 +36,7 @@ export const MOTIONS = [
   { id: 'walk',  name: 'Walk',  blurb: 'Nominal gait. A foot is down most of the cycle.' },
   { id: 'run',   name: 'Run',   blurb: 'Shorter contact, a real flight phase, deeper lean.' },
   { id: 'climb', name: 'Climb', blurb: 'High knee lift and a forward reach, as up a slope.' },
-  { id: 'swim',  name: 'Swim',  blurb: 'Front crawl. Free fall only \u2014 nothing to push against but yourself.', issOnly: true },
+  { id: 'swim',  name: 'Swim',  blurb: 'Butterfly. Free fall only \u2014 nothing to push against but yourself.', issOnly: true },
 ];
 
 /**
@@ -43,10 +44,62 @@ export const MOTIONS = [
  * length, lift the swing-foot clearance, lean the trunk pitch.
  */
 const TEMPLATE = {
-  walk:  { dutyBias: 0.00, strideScale: 1.00, lift: 1.00, lean: 0.06, armAmp: 1.00 },
-  run:   { dutyBias: -0.17, strideScale: 1.55, lift: 1.45, lean: 0.26, armAmp: 1.70 },
-  climb: { dutyBias: 0.10, strideScale: 0.62, lift: 2.10, lean: 0.30, armAmp: 1.25 },
+  // `froude` is v^2/(g*L) for the mode — the dimensionless speed that makes
+  // gaits comparable across body sizes AND gravitational fields. A walk sits
+  // well below the ~0.5 walk-run transition; a run sits above it.
+  walk:  { froude: 0.25, dutyBias: 0.00, strideScale: 1.00, lift: 1.00, lean: 0.06, armAmp: 1.00 },
+  run:   { froude: 0.75, dutyBias: -0.17, strideScale: 1.55, lift: 1.45, lean: 0.26, armAmp: 1.70 },
+  climb: { froude: 0.08, dutyBias: 0.10, strideScale: 0.62, lift: 2.10, lean: 0.30, armAmp: 1.25 },
 };
+
+/**
+ * The foot roll — which part of the sole is lowest, through the cycle.
+ *
+ * `left_ankle_pitch_joint` has axis +y in a frame with +x at the toe and +z
+ * up, so a POSITIVE angle is plantarflexion: the toe goes down and the heel
+ * comes up. The URDF allows -0.87267 (toe up) to +0.5236 (toe down), and
+ * everything below stays inside that with margin.
+ *
+ * The old trajectory ran the ankle the wrong way through stance — it started
+ * near flat and dorsiflexed steadily to -0.26, so the toe ROSE while the body
+ * passed over the foot. That drives the heel edge down into the ground for the
+ * whole of stance and leaves no push-off at all, which is what "the feet go
+ * under the ground" looks like from outside.
+ *
+ * A step is a roll from one end of the sole to the other:
+ *
+ *   TOE STRIKE   the foot arrives pointed, so the toe pair is the lowest
+ *                thing on the robot and touches first
+ *   HEEL DOWN    the ankle gives way to flat over the first fifth of stance
+ *                and the heel settles onto the ground
+ *   ROLL OVER    the shank rotates forward over a planted sole, which IS
+ *                dorsiflexion, so the angle goes negative through midstance
+ *   TOE OFF      plantarflexion at the end of stance: the heel lifts and the
+ *                toe is the last thing in contact
+ *   CLEARANCE    the toe comes up hard in early swing so it does not catch,
+ *                then points again to be ready for the next toe strike
+ */
+const TOE_STRIKE = 0.24;    // toe-down at touchdown, rad
+const TOE_OFF = 0.44;       // plantarflexion at push-off, rad
+const DORSI = -0.26;        // dorsiflexion over midstance, rad
+const CLEAR = -0.34;        // toe-up during swing clearance, rad
+
+/** Smoothstep, so no segment boundary shows up as a kink in the ankle rate. */
+const ease = (u) => { const c = clamp(u, 0, 1); return c * c * (3 - 2 * c); };
+
+/** Ankle through STANCE, s in [0,1]. Toe strike -> heel down -> toe off. */
+export function stanceAnkle(s) {
+  if (s < 0.20) return TOE_STRIKE + (0 - TOE_STRIKE) * ease(s / 0.20);
+  if (s < 0.70) return 0 + (DORSI - 0) * ease((s - 0.20) / 0.50);
+  return DORSI + (TOE_OFF - DORSI) * ease((s - 0.70) / 0.30);
+}
+
+/** Ankle through SWING, s in [0,1]. Clear the ground, then point the toe. */
+export function swingAnkle(s) {
+  if (s < 0.30) return TOE_OFF + (CLEAR - TOE_OFF) * ease(s / 0.30);
+  if (s < 0.72) return CLEAR;                          // held up, clearing
+  return CLEAR + (TOE_STRIKE - CLEAR) * ease((s - 0.72) / 0.28);
+}
 
 export class Gait {
   /**
@@ -59,9 +112,23 @@ export class Gait {
     this.phase = 0;
     this.distance = 0;
     this.mode = mode;
+    // Swim time runs separately from gait phase: the stroke has an amplitude
+    // ramp, so it needs a clock that only goes forward, not a phase that wraps.
+    this.swimT = 0;
+    // Butterfly is written against the G1's joint names and the G1's URDF
+    // limits. H1 ships arms that are welded and Go2 has none, so neither can
+    // run it and both keep the generic free-fall path below.
+    this.butterfly = def.id === 'g1' ? new Butterfly() : null;
   }
 
-  setMode(mode) { this.mode = mode; }
+  setMode(mode) {
+    this.mode = mode;
+    if (mode === 'swim' && this.butterfly) { this.swimT = 0; this.butterfly.reset(); }
+  }
+
+  /** Latching emergency stop for the stroke. No-op for anything else. */
+  estop(reason = 'operator') { this.butterfly?.estop(reason); }
+  get estopped() { return !!this.butterfly?.stopped; }
 
   /** Pendulum period of the swing leg in this field. */
   stepPeriod(g) {
@@ -75,17 +142,42 @@ export class Gait {
     return v * Math.sqrt(this.L / g);
   }
 
-  /** Comfortable cruise speed: a stride per period, stride set by leg length. */
+  /**
+   * Comfortable cruise speed, from the Froude number.
+   *
+   * This was previously stride/period with the stride scaled by
+   * sqrt(g_earth/g). That is wrong in a way that hides itself: the period
+   * ALSO goes as sqrt(1/g), so the two cancel exactly and cruise speed came
+   * out identical in every field. Three robots started side by side stayed
+   * exactly level for the whole traverse, which made gravity look like it did
+   * nothing to travel.
+   *
+   * The right invariant is the Froude number, Fr = v^2 / (g*L). Legged gaits
+   * of every size and on every body compare at equal Fr — it is why a walk
+   * breaks into a run near Fr = 0.5 for animals from a quail to an elephant.
+   * Holding Fr fixed and solving for speed gives
+   *
+   *     v = sqrt(Fr * g * L)
+   *
+   * so walking speed falls as sqrt(g): the Moon's is sqrt(1.625/9.807) =
+   * 0.407 of Earth's. That is the real Apollo result. The crews could not
+   * walk quickly, and the reason they switched to loping is precisely that
+   * the walk-run transition speed drops with g.
+   *
+   * Note what does NOT change: stride = v * T goes as sqrt(g) * sqrt(1/g),
+   * which is constant. At equal Froude number the step LENGTH is the same in
+   * every field, and the whole difference is in how long each step takes.
+   */
   cruiseSpeed(g) {
     if (this.mode === 'swim') return 0.55;         // a glide, not a stride
     const t = TEMPLATE[this.mode] || TEMPLATE.walk;
-    const strideScale = clamp(Math.sqrt(G_EARTH / Math.max(g, 0.35)), 1, 2.6);
-    return (this.L * 0.92 * strideScale * t.strideScale) / this.stepPeriod(g);
+    return Math.sqrt(t.froude * Math.max(g, 0.05) * this.L);
   }
 
   advance(dt, g) {
     const T = this.stepPeriod(g);
     this.phase = (this.phase + dt / (T * 2)) % 1;   // one full cycle = two steps
+    this.swimT += Math.min(0.05, Math.max(0, dt));
     const v = this.cruiseSpeed(g);
     this.distance += v * dt;
     return { T, v, phase: this.phase };
@@ -125,89 +217,115 @@ export class Gait {
       return { joints, bodyY: 0, pitch: Math.sin(p * TAU) * 0.12, airborne: true, duty: 0, contacts: [] };
     }
 
-    // ---- front crawl, by the four coaching phases ------------------------
-    // Catch -> Pull -> Push -> Recovery, per arena's freestyle stroke guide.
-    // The two arms run half a cycle apart, so one is always propelling while
-    // the other resets.
+    // ---- butterfly ------------------------------------------------------
+    // One definition of the stroke, in Butterfly.js, which is also what the
+    // dry run and the static check measure. Keeping a second hand-rolled copy
+    // here is how the two drift: the copy that used to live in this function
+    // negated the RIGHT elbow, so the two arms bent opposite ways through the
+    // pull, and drove the LEFT elbow to -1.35 rad against a -1.0472 limit, so
+    // one arm silently clamped and the other did not.
+    if (this.butterfly) {
+      const bf = this.butterfly;
+      bf.t = this.swimT;                 // keep the stroke's own clock in step
+      Object.assign(joints, bf.pose(this.swimT));
+      // The trunk's own pitch follows the same undulation the waist joint is
+      // taking, so the whole body reads as one wave rather than a torso that
+      // is bending while the body it belongs to holds still.
+      const w = joints.waist_pitch_joint ?? 0;
+      return { joints, bodyY: 0, roll: 0, pitch: 0.05 + w * 0.70,
+               airborne: true, duty: 0, contacts: [],
+               stroke: { phase: bf.phaseAt(bf.t), amplitude: bf.amplitudeAt(bf.t),
+                         frequency: bf.cfg.frequency, estopped: bf.stopped } };
+    }
+
+    // Everything below is the fallback for a description Butterfly cannot
+    // drive — H1's arms are welded in the shipped URDF, so there is no stroke
+    // to make, only a kick.
+
+    // The defining property, and the reason it is the right stroke to show in
+    // free fall: BOTH arms do the same thing at the same time. There is no
+    // half-cycle offset and no body roll to sweep one arm under the
+    // centreline, so the whole motion is symmetric about the spine — which
+    // means every gram of momentum an arm throws forward is matched by the
+    // other one, and the only thing left for the body to do is recoil. A
+    // crawl hides that behind roll; a butterfly cannot.
     //
-    //   CATCH     elbow HIGH, forearm presses down, palm down, wrist above
-    //             the fingers. The elbow does not drop — that is the single
-    //             most common fault the guide calls out.
-    //   PULL      the hand travels UNDER the body rather than alongside it,
-    //             so the arm adducts toward the centreline; palm finishes up.
-    //   PUSH      backwards past the hip until the hand exits.
-    //   RECOVERY  elbow lifts first, hand comes forward at shoulder height,
-    //             then extends out in front to enter.
-    const CATCH = 0.12, PULL = 0.32, PUSH = 0.50;   // fractions of the cycle
+    //   ENTRY     hands enter ahead, wide of the shoulders, arms long.
+    //   CATCH     elbows stay HIGH while the hands press out and down.
+    //   PULL      hands sweep in under the chest — the narrow waist of the
+    //             keyhole — with the deepest elbow bend at the middle.
+    //   PUSH      hands accelerate back past the hips and exit thumbs-first.
+    //   RECOVERY  arms come over the top STRAIGHT and wide, both together.
+    //             This is what makes it read as butterfly and not as anything
+    //             else, so the elbow stays extended through the whole sweep.
+    const ENTRY = 0.10, CATCH = 0.26, PULL = 0.44, PUSH = 0.58;
     const arm = (t) => {
       const ph = ((t % 1) + 1) % 1;
+      if (ph < ENTRY) {
+        const u = ph / ENTRY;
+        return { pitch: -2.55 + 0.15 * u, roll: 0.40 - 0.06 * u, elbow: -0.08 - 0.10 * u };
+      }
       if (ph < CATCH) {
-        const u = ph / CATCH;
-        return {
-          pitch: -2.30 + 0.55 * u,        // extended ahead, beginning to press
-          roll: 0.34 - 0.10 * u,          // held wide of the head
-          elbow: -0.15 - 0.55 * u,        // elbow bends EARLY: the high elbow
-        };
+        const u = (ph - ENTRY) / (CATCH - ENTRY);
+        // press out and down; the elbow bends early and stays above the hand
+        return { pitch: -2.40 + 0.75 * u, roll: 0.34 + 0.16 * u, elbow: -0.18 - 0.62 * u };
       }
       if (ph < PULL) {
         const u = (ph - CATCH) / (PULL - CATCH);
-        return {
-          pitch: -1.75 + 1.55 * u,
-          roll: 0.24 - 0.30 * u,          // sweeps inward, under the body
-          elbow: -0.70 - 0.45 * u,        // deepest bend at mid-pull
-        };
+        // the keyhole narrows: hands sweep inward under the chest
+        return { pitch: -1.65 + 1.30 * u, roll: 0.50 - 0.62 * u, elbow: -0.80 - 0.55 * u };
       }
       if (ph < PUSH) {
         const u = (ph - PULL) / (PUSH - PULL);
-        return {
-          pitch: -0.20 + 1.30 * u,        // drives back past the hip
-          roll: -0.06 + 0.16 * u,
-          elbow: -1.15 + 1.00 * u,        // straightens as it pushes through
-        };
+        // accelerate back past the hip, arm straightening as it goes
+        return { pitch: -0.35 + 1.55 * u, roll: -0.12 + 0.10 * u, elbow: -1.35 + 1.25 * u };
       }
       const u = (ph - PUSH) / (1 - PUSH);
-      // Recovery: the elbow leads, so bend peaks early and the arm only
-      // straightens again as the hand reaches forward to enter.
-      const lead = Math.sin(Math.PI * Math.min(1, u * 1.35));
+      // Recovery, both arms together, over the top and WIDE, elbows straight.
+      const sweep = Math.sin(Math.PI * u);
       return {
-        pitch: 1.10 - 3.40 * u,
-        roll: 0.30 + 0.62 * lead,         // elbow carried high and wide
-        elbow: -0.20 - 1.15 * lead,
+        pitch: 1.20 - 3.75 * u,
+        roll: -0.02 + 1.05 * sweep,      // carried wide, the butterfly signature
+        elbow: -0.10 - 0.12 * sweep,     // stays long; never folds like a crawl
       };
     };
 
     const A = this.def.arms;
     if (A) {
-      const L = arm(p), R = arm(p + 0.5);
-      joints[A.left.shoulderPitch] = L.pitch;
-      joints[A.left.shoulderRoll] = L.roll;
-      joints[A.left.elbow] = L.elbow;
-      joints[A.right.shoulderPitch] = R.pitch;
-      joints[A.right.shoulderRoll] = -R.roll;
-      joints[A.right.elbow] = -R.elbow;
+      // SAME phase for both arms. This is the whole difference from a crawl.
+      const S = arm(p);
+      joints[A.left.shoulderPitch] = S.pitch;
+      joints[A.left.shoulderRoll] = S.roll;
+      joints[A.left.elbow] = S.elbow;
+      joints[A.right.shoulderPitch] = S.pitch;
+      joints[A.right.shoulderRoll] = -S.roll;
+      joints[A.right.elbow] = -S.elbow;
     }
 
-    // Flutter kick: small, fast, alternating — six beats per arm cycle, which
-    // is the usual crawl timing.
-    const beat = Math.sin(p * TAU * 3);
+    // Dolphin kick: legs together, TWO kicks per arm cycle — one as the hands
+    // enter, one as they push out. Alternating a flutter here would be the
+    // single most obvious thing wrong with it.
+    const kick = Math.sin(p * TAU * 2);
     for (const side of ['left', 'right']) {
       const J = this.def.legs[side];
       const s = side === 'left' ? 1 : -1;
-      const k = beat * s;
-      joints[J.hipPitch] = -0.10 + k * 0.30;
-      joints[J.hipRoll] = s * 0.03;
-      joints[J.knee] = 0.10 + Math.max(0, -k) * 0.55;   // knee bends on the upbeat only
-      joints[J.anklePitch] = -0.35 - k * 0.15;           // toes pointed, as they must be
+      joints[J.hipPitch] = -0.12 + kick * 0.34;
+      joints[J.hipRoll] = s * 0.015;                  // legs held together
+      joints[J.knee] = 0.14 + Math.max(0, -kick) * 0.62;   // bends on the up-beat
+      joints[J.anklePitch] = -0.38 - kick * 0.18;     // toes pointed
     }
 
-    // The body rolls TOWARD the arm that is pulling — that is what lets the
-    // pull happen under the centreline, and what stops a crawl reading as
-    // flailing. The guide's other posture note is head down, hips high, which
-    // is the small nose-down trunk pitch below.
-    const roll = Math.sin(p * TAU) * 0.34;
-    if (this.def.waistYaw) joints[this.def.waistYaw] = roll * 0.45;
+    // Body undulation rather than roll. The chest presses down as the hands
+    // catch and the hips rise behind it, which is the wave that carries the
+    // dolphin kick — and in free fall it is pure angular-momentum exchange,
+    // since there is no water to press against.
+    const wave = Math.sin(p * TAU * 2 - 0.9);
+    if (this.def.waistPitch) joints[this.def.waistPitch] = wave * 0.20;
+    else if (this.def.waistYaw) joints[this.def.waistYaw] = 0;
+    if (this.def.waistRoll) joints[this.def.waistRoll] = 0;
 
-    return { joints, bodyY: 0, roll, pitch: 0.05, airborne: true, duty: 0, contacts: [] };
+    return { joints, bodyY: 0, roll: 0, pitch: 0.05 + wave * 0.14,
+             airborne: true, duty: 0, contacts: [] };
   }
 
   _biped(g) {
@@ -233,18 +351,21 @@ export class Gait {
         const lift = Math.sin(Math.PI * s);
         hip = -0.30 + 0.92 * s * t.strideScale;
         knee = 0.14 + 1.30 * t.lift * lift ** 1.5;
-        ankle = -0.18 + 0.30 * lift;
+        ankle = swingAnkle(s);
       } else {
         // Stance: the leg is nearly straight and sweeps back under the body,
         // which is what actually carries the robot forward.
         hip = (0.46 - 0.86 * s) * t.strideScale;
         knee = 0.10 + 0.16 * Math.sin(Math.PI * s);
-        ankle = -0.06 - 0.20 * s;
+        ankle = stanceAnkle(s);
       }
       joints[J.hipPitch] = hip;
       joints[J.hipRoll] = side === 'left' ? 0.035 : -0.035;
       joints[J.knee] = knee;
       joints[J.anklePitch] = ankle;
+      // Roll is left flat here and taken over by Footing.conformAnkles when
+      // there is terrain to conform to; on a flat floor flat is correct.
+      if (J.ankleRoll) joints[J.ankleRoll] = 0;
       return { swinging, s };
     };
 
