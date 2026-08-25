@@ -45,7 +45,14 @@ html, body { margin:0; height:100%; background:var(--bg); color:var(--ink);
   border:1px solid rgba(255,255,255,.08); border-radius:8px; }
 
 /* Labels pinned to the robots themselves. */
-.gc-tags { position:absolute; inset:0; pointer-events:none; }
+/* The world-space label layer covers the whole viewport, so it MUST be
+   transparent to the mouse — and saying so with a bare `.gc-tags` was not
+   enough. `#ui > *` above carries an id, so it scores 1,0,0 against this
+   rule's 0,1,0 and won: the layer came out `pointer-events:auto` and ate
+   every click on the page. The mode buttons, `restart in phase` and `pause`
+   were all unreachable, which is why the page appeared stuck on Walk.
+   Matching the `#ui >` shape puts this rule ahead of it at 1,1,0. */
+#ui > .gc-tags { position:absolute; inset:0; pointer-events:none; }
 .gc-tag { position:absolute; transform:translate(-50%,-100%); text-align:center;
   white-space:nowrap; text-shadow:0 2px 10px rgba(0,0,0,.9); pointer-events:none; }
 .gc-tag b { display:block; font-size:12px; letter-spacing:.18em; }

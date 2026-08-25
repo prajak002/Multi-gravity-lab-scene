@@ -41,6 +41,65 @@ if (by.MOON && by.EARTH) {
   console.log(`\nEarth leads Moon by ${sep.toFixed(2)} m  (step period ratio x${(by.MOON.T / by.EARTH.T).toFixed(2)}, sqrt(9.807/1.625)=${Math.sqrt(9.807 / 1.625).toFixed(3)})`);
   if (sep < 1) fail.push(`separation only ${sep.toFixed(2)} m — the lanes are not diverging`);
 }
+// ---------------------------------------------------------------------------
+// The mode buttons, clicked with the MOUSE.
+//
+// This is not the same test as calling button.click() from a page script, and
+// the difference is the whole reason it is here. A scripted .click() dispatches
+// straight at the element and skips hit-testing entirely, so it passes happily
+// while a full-screen transparent overlay sits on top eating every real click.
+// That is exactly what shipped: `#ui > *` sets pointer-events:auto and beats a
+// bare `.gc-tags` rule on specificity, so the world-space label layer — inset:0,
+// the size of the window — swallowed the pointer and the page was stuck on Walk
+// with no way to reach Run, Climb, restart or pause.
+//
+// Assert on the READOUT text too, not just internal state: the panels are what
+// the page is for, and they have been frozen while the gait switched correctly
+// underneath.
+// ---------------------------------------------------------------------------
+const dutyOf = () => page.evaluate(() => [...document.querySelectorAll('.gc-lane')].map((el) => {
+  const rows = [...el.querySelectorAll('.gc-rows > *')].map((n) => n.textContent.trim());
+  const i = rows.indexOf('duty factor');
+  return i >= 0 ? rows[i + 1] : '?';
+}));
+
+const overlay = await page.evaluate(() => {
+  const W = innerWidth, H = innerHeight;
+  return [...document.querySelectorAll('#ui *')].filter((e) => {
+    const r = e.getBoundingClientRect(), cs = getComputedStyle(e);
+    return r.width > W * 0.9 && r.height > H * 0.9 && cs.pointerEvents === 'auto'
+        && cs.display !== 'none' && cs.visibility !== 'hidden' && +cs.opacity < 0.02;
+  }).map((e) => e.className || e.tagName);
+});
+if (overlay.length) fail.push(`invisible full-window click-eater over the UI: ${overlay.join(', ')}`);
+
+console.log('\nmode buttons, clicked with the mouse:');
+const seen = {};
+for (const mode of ['run', 'climb', 'walk']) {
+  const el = await page.$(`[data-motion="${mode}"]`);
+  if (!el) { fail.push(`no ${mode} button`); continue; }
+  const box = await el.boundingBox();
+  if (!box) { fail.push(`${mode} button has no box`); continue; }
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  await page.waitForTimeout(2200);
+  const got = await page.evaluate(() => ({
+    motion: window.__gravity.motion,
+    gaits: [...new Set(window.__gravity.lanes.map((l) => l.gait.mode))],
+    on: [...document.querySelectorAll('[data-motion]')].filter((b) => b.classList.contains('on')).map((b) => b.dataset.motion),
+  }));
+  const panel = await dutyOf();
+  seen[mode] = panel.join('/');
+  console.log(`  ${mode.padEnd(6)} gait ${got.gaits.join(',').padEnd(6)} highlighted ${String(got.on).padEnd(6)} panel duty ${panel.join(' ')}`);
+  if (got.motion !== mode) fail.push(`clicking ${mode} left the app on ${got.motion} — the click never reached the button`);
+  if (got.gaits.length !== 1 || got.gaits[0] !== mode) fail.push(`${mode}: lanes are running ${got.gaits.join(',')}`);
+  if (!got.on.includes(mode)) fail.push(`${mode} button did not light up`);
+}
+// Each mode must produce DIFFERENT numbers, or the readout is frozen again.
+const distinct = new Set(Object.values(seen));
+if (Object.keys(seen).length === 3 && distinct.size !== 3) {
+  fail.push(`the readout shows the same duty factors for different modes (${[...distinct].join(' | ')}) — panel is frozen`);
+}
+
 await page.screenshot({ path: process.argv[3] || '/tmp/gravity.png' });
 await browser.close();
 console.log(errs.length ? '\nERRORS:\n  ' + [...new Set(errs)].slice(0, 6).join('\n  ') : '\nno console errors, no failed requests');
