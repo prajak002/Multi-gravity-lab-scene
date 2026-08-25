@@ -106,6 +106,10 @@ export class GravityCompare {
   /** Put all three back on the start line, in phase. */
   _reset() {
     this.elapsed = 0;
+    // The readout throttle is keyed on `elapsed`, and this puts `elapsed`
+    // BACK to zero — so the next paint is due immediately, not in 0.12 s.
+    // Leaving the old stamp in place is what froze the panel: see _paint().
+    this._lastPaint = -Infinity;
     for (const lane of this.lanes) {
       lane.travelled = 0;
       lane.gait = new Gait(robotById('g1'), lane.loaded.height * 0.52, this.motion);
@@ -233,8 +237,25 @@ export class GravityCompare {
     this._placeTags();
   }
 
+  /**
+   * Repaint the three readout panels, at most eight times a second.
+   *
+   * The throttle used to be `elapsed - lastPaint < 0.12`, which silently
+   * assumed `elapsed` only ever goes up. It does not: _reset() puts it back to
+   * zero, and every motion button calls _reset(). So after switching to Run,
+   * the test became `0 - 25.4 < 0.12` — true — and stayed true until elapsed
+   * climbed back past the stale stamp, which the next click reset again.
+   *
+   * The panels therefore kept showing the WALK step period, duty factor and
+   * flight fraction while the robots on screen were plainly running. The gait
+   * had switched correctly the whole time; the numbers describing it had not,
+   * and the numbers are what this page is FOR. Reading it, Run and Climb
+   * looked like buttons that did nothing.
+   *
+   * Comparing the magnitude makes it robust to the clock going backwards.
+   */
   _paint() {
-    if (this.elapsed - (this._lastPaint || 0) < 0.12) return;
+    if (Math.abs(this.elapsed - (this._lastPaint ?? -Infinity)) < 0.12) return;
     this._lastPaint = this.elapsed;
     const earthT = this.lanes[0].gait.stepPeriod(this.lanes[0].g);
     this.readout.innerHTML = this.lanes.map((l) => {

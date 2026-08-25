@@ -22,6 +22,16 @@ import { IBL } from '../render/IBL.js';
 import { loadRobot, robotById } from '../render/Robots.js';
 import { loadScene, discoverScenes, ClipPlayer, jointSaturation } from '../scenes/SceneLoader.js';
 
+// A G1 is 1.32 m tall and about 0.5 m across at the arms. This is the radius
+// of the ball one of them needs to sit inside, which is what the framing has
+// to hold on top of however far apart the two runs are.
+const BODY_RADIUS = 0.85;
+// Headroom, so a robot is never touching the edge of the frame.
+const FRAME_MARGIN = 1.18;
+
+const _half = new Vector3();
+const _view = new Vector3();
+
 const CLIP_KEYS = ['A', 'B'];
 
 /** Which environment's lighting a scene borrows. */
@@ -138,7 +148,12 @@ export class Arena {
     c.addEventListener('pointercancel', end);
     c.addEventListener('wheel', (e) => {
       e.preventDefault();
-      this.dist = Math.max(1.6, Math.min(40, this.dist * (1 + Math.sign(e.deltaY) * 0.12)));
+      // Zoom from the distance the camera is ACTUALLY at, not from the
+      // requested one. A scene starts with dist = 0 meaning "as close as the
+      // pair allows", and 0 multiplied by 1.12 is still 0 — so scrolling out
+      // from a fresh scene would have done nothing at all.
+      const base = Math.max(this.dist, this._holdBothDistance());
+      this.dist = Math.max(1.6, Math.min(40, base * (1 + Math.sign(e.deltaY) * 0.12)));
     }, { passive: false });
   }
 
@@ -371,7 +386,10 @@ export class Arena {
 
     const env = envForBody(scene.body);
     this.env = env;
-    this.dist = scene.micro ? 5.6 : 7.4;
+    // Start as close as the pair can be held from, rather than at a fixed
+    // number that was tuned for one separation and one aspect ratio. The
+    // clamp in step() is the real floor; this just asks for it.
+    this.dist = 0;
     this.applyEnv(env);
     this.buildTerrain(env);
     this.buildMicroSet(scene);
@@ -412,6 +430,35 @@ export class Arena {
 
   // -------------------------------------------------------------------------
   // frame
+  /**
+   * The closest distance from which both robots still fit in frame.
+   *
+   * Only the part of their separation that lies ACROSS the view counts: seen
+   * from directly down the lane axis the two are one behind the other and the
+   * camera can come in as close as a single body needs, which is what makes
+   * orbiting round to the end of the lane a genuinely close look rather than
+   * something the clamp fights.
+   *
+   * The pair is treated as a sphere about the aim point and fitted to the
+   * NARROWER of the two half-angles, so it holds in portrait windows too.
+   */
+  _holdBothDistance() {
+    const ra = this.robots.A?.root, rb = this.robots.B?.root;
+    if (!ra || !rb) return 0;
+
+    // Half the separation, and the direction the camera looks from.
+    _half.copy(rb.position).sub(ra.position).multiplyScalar(0.5);
+    const ce = Math.cos(this.elev), se = Math.sin(this.elev);
+    _view.set(Math.cos(this.orbit) * ce, se, Math.sin(this.orbit) * ce).normalize();
+    // Drop the component along the view: depth costs no frame.
+    _half.addScaledVector(_view, -_half.dot(_view));
+
+    const radius = _half.length() + BODY_RADIUS;
+    const halfV = Math.tan((this.camera.fov * Math.PI) / 180 / 2);
+    const halfH = halfV * Math.max(0.2, this.camera.aspect);
+    return (radius * FRAME_MARGIN) / Math.min(halfV, halfH);
+  }
+
   // -------------------------------------------------------------------------
   step(dt) {
     if (!this.ready) return;
@@ -443,11 +490,20 @@ export class Arena {
     mid.y += 0.5;
     this.aim.lerp(mid, 1 - Math.exp(-dt * 3.5));
 
+    // Never sit closer than the pair can be held from.
+    //
+    // The camera aims at the MIDPOINT of the two robots, so in side-by-side
+    // each of them is half the lane separation off the view axis. Zooming in
+    // moves that midpoint toward the screen centre and pushes both humanoids
+    // off opposite edges — at the 1.6 m zoom stop with 1.8 m of separation,
+    // half the frame is 0.58 m of world and each robot is 0.90 m out, so the
+    // close view showed an empty patch of regolith between them.
+    const d = Math.max(this.dist, this._holdBothDistance());
     const ce = Math.cos(this.elev), se = Math.sin(this.elev);
     this.camera.position.set(
-      this.aim.x + Math.cos(this.orbit) * ce * this.dist,
-      this.aim.y + se * this.dist + 0.4,
-      this.aim.z + Math.sin(this.orbit) * ce * this.dist);
+      this.aim.x + Math.cos(this.orbit) * ce * d,
+      this.aim.y + se * d + 0.4,
+      this.aim.z + Math.sin(this.orbit) * ce * d);
     this.camera.lookAt(this.aim);
     this.sun.target.position.copy(this.aim);
     this.sun.position.copy(sunDir(this.env.sunElev, this.env.sunAz))
