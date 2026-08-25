@@ -3,7 +3,6 @@ import { mkdirSync } from 'node:fs';
 const out = process.argv[2]; mkdirSync(out, { recursive: true });
 const CASES = [
   { name: 'moon-run',   robot: 'g1',  env: 'moon',  motion: 'run' },
-  { name: 'mars-climb', robot: 'g1',  env: 'mars',  motion: 'climb' },
   { name: 'iss-swim',   robot: 'g1',  env: 'iss',   motion: 'swim' },
   { name: 'moon-go2-run', robot: 'go2', env: 'moon', motion: 'run' },
 ];

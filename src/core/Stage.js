@@ -137,10 +137,10 @@ export class Stage {
    * turns through the crossover.
    */
   _solve(shot, outPos, outAim) {
-    // Deliberately NOT re-picking the side per frame. Tried it again for the
-    // climb: on steering terrain the flip walks the camera through the hill
-    // the robot is climbing, and the subject vanishes behind it. The side is
-    // chosen once per run, in enter().
+    // Deliberately NOT re-picking the side per frame. Tried it: on rolling
+    // terrain the flip walks the camera through the hill between it and the
+    // robot, and the subject vanishes behind it. The side is chosen once per
+    // run, in enter().
     const s = Math.sin(this.orbit), c = Math.cos(this.orbit);
     const o = shot.offset;
     const oz = o.z * this.side;

@@ -249,8 +249,8 @@ export class GravityCompare {
    * The panels therefore kept showing the WALK step period, duty factor and
    * flight fraction while the robots on screen were plainly running. The gait
    * had switched correctly the whole time; the numbers describing it had not,
-   * and the numbers are what this page is FOR. Reading it, Run and Climb
-   * looked like buttons that did nothing.
+   * and the numbers are what this page is FOR. Reading it, Run looked like
+   * a button that did nothing.
    *
    * Comparing the magnitude makes it robust to the clock going backwards.
    */

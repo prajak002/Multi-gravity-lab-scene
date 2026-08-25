@@ -4,7 +4,7 @@
  *
  * The point of this app is that ONE motion template runs in four gravity
  * fields, so the check that matters is not "does it load" but "does every
- * combination load", which is 3 x 4 x 4 and not something to click by hand.
+ * combination load", which is 3 x 4 x 3 and not something to click by hand.
  */
 import { chromium } from 'playwright';
 const base = process.argv[2] || 'http://localhost:4199';
@@ -21,7 +21,7 @@ await page.waitForTimeout(2500);
 const combos = [];
 for (const robot of ['g1', 'h1', 'go2'])
   for (const env of ['moon', 'mars', 'iss', 'earth'])
-    for (const motion of ['walk', 'run', 'climb', 'swim'])
+    for (const motion of ['walk', 'run', 'swim'])
       combos.push({ robot, env, motion });
 
 let ok = 0, skipped = 0;

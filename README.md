@@ -24,7 +24,7 @@ Three pages, three different questions:
 
 ```bash
 node tools/check_gravity.mjs   http://localhost:5173   # asserts the lanes diverge
-node tools/check_all_modes.mjs http://localhost:5173   # all 48 robot x field x motion
+node tools/check_all_modes.mjs http://localhost:5173   # all 36 robot x field x motion
 node tools/check_arena.mjs     http://localhost:4199   # the A/B viewer, against dist/
 ```
 

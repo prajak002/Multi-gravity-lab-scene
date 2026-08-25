@@ -13,7 +13,14 @@
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
   font: 13px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   overflow: hidden; }
-canvas { position: fixed; inset: 0; display: block; touch-action: none; }
+/* width/height are NOT redundant next to inset:0. A canvas is a replaced
+   element with an intrinsic size from its width/height attributes, and three
+   sets those to the DRAWING BUFFER — 2800x1600 at devicePixelRatio 2. Without
+   an explicit CSS size the element laid out at 2800x1600 CSS pixels inside a
+   1400x800 window, so the page showed the top-left quarter of the frame,
+   scaled up. Both other pages set this; this one did not. */
+canvas { position: fixed; inset: 0; width: 100%; height: 100%;
+  display: block; touch-action: none; }
 
 #ui { position: fixed; inset: 0; pointer-events: none; }
 #ui button, #ui input { pointer-events: auto; }

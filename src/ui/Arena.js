@@ -30,6 +30,7 @@ const BODY_RADIUS = 0.85;
 const FRAME_MARGIN = 1.18;
 
 const _half = new Vector3();
+const _size = new Vector2();
 const _view = new Vector3();
 
 const CLIP_KEYS = ['A', 'B'];
@@ -511,8 +512,17 @@ export class Arena {
   }
 
   render() {
-    const w = this.renderer.domElement.width, h = this.renderer.domElement.height;
     const r = this.renderer;
+    // CSS pixels, not drawing-buffer pixels.
+    //
+    // setViewport() and setScissor() take CSS pixels and multiply by the
+    // pixel ratio themselves. domElement.width/height are the BUFFER, already
+    // multiplied — so at devicePixelRatio 2 this asked for a 5600x3200 viewport
+    // on a 2800x1600 buffer, and only the bottom-left quarter of the projected
+    // image landed on the canvas, magnified. getSize() reports the CSS size the
+    // renderer was actually given.
+    r.getSize(_size);
+    const w = _size.x, h = _size.y;
 
     // Lanes: both robots on screen at once, one pass, nothing hidden.
     if (this.mode === 'lanes') {

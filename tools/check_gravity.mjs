@@ -51,7 +51,7 @@ if (by.MOON && by.EARTH) {
 // That is exactly what shipped: `#ui > *` sets pointer-events:auto and beats a
 // bare `.gc-tags` rule on specificity, so the world-space label layer — inset:0,
 // the size of the window — swallowed the pointer and the page was stuck on Walk
-// with no way to reach Run, Climb, restart or pause.
+// with no way to reach Run, restart or pause.
 //
 // Assert on the READOUT text too, not just internal state: the panels are what
 // the page is for, and they have been frozen while the gait switched correctly
@@ -75,7 +75,7 @@ if (overlay.length) fail.push(`invisible full-window click-eater over the UI: ${
 
 console.log('\nmode buttons, clicked with the mouse:');
 const seen = {};
-for (const mode of ['run', 'climb', 'walk']) {
+for (const mode of ['run', 'walk']) {
   const el = await page.$(`[data-motion="${mode}"]`);
   if (!el) { fail.push(`no ${mode} button`); continue; }
   const box = await el.boundingBox();
@@ -96,7 +96,7 @@ for (const mode of ['run', 'climb', 'walk']) {
 }
 // Each mode must produce DIFFERENT numbers, or the readout is frozen again.
 const distinct = new Set(Object.values(seen));
-if (Object.keys(seen).length === 3 && distinct.size !== 3) {
+if (Object.keys(seen).length === 2 && distinct.size !== 2) {
   fail.push(`the readout shows the same duty factors for different modes (${[...distinct].join(' | ')}) — panel is frozen`);
 }
 

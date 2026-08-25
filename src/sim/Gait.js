@@ -35,7 +35,6 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 export const MOTIONS = [
   { id: 'walk',  name: 'Walk',  blurb: 'Nominal gait. A foot is down most of the cycle.' },
   { id: 'run',   name: 'Run',   blurb: 'Shorter contact, a real flight phase, deeper lean.' },
-  { id: 'climb', name: 'Climb', blurb: 'High knee lift and a forward reach, as up a slope.' },
   { id: 'swim',  name: 'Swim',  blurb: 'Butterfly. Free fall only \u2014 nothing to push against but yourself.', issOnly: true },
 ];
 
@@ -49,7 +48,6 @@ const TEMPLATE = {
   // well below the ~0.5 walk-run transition; a run sits above it.
   walk:  { froude: 0.25, dutyBias: 0.00, strideScale: 1.00, lift: 1.00, lean: 0.06, armAmp: 1.00 },
   run:   { froude: 0.75, dutyBias: -0.17, strideScale: 1.55, lift: 1.45, lean: 0.26, armAmp: 1.70 },
-  climb: { froude: 0.08, dutyBias: 0.10, strideScale: 0.62, lift: 2.10, lean: 0.30, armAmp: 1.25 },
 };
 
 /**

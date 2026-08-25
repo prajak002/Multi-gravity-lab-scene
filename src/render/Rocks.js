@@ -3,8 +3,8 @@
  *
  * Two jobs. First, scale: a bare displaced plane gives an audience nothing of
  * known size to measure the robot against, and rocks at a spread of sizes do.
- * Second, the climb gait needs something to be climbing — a high knee lift on
- * flat ground reads as marching, not ascending.
+ * Second, relief: a gait crossing genuinely uneven ground reads as locomotion
+ * in a place, where the same gait on a bare plane reads as a treadmill.
  *
  * One InstancedMesh per environment: a few hundred boulders cost one draw
  * call, and the per-instance variation comes from the transform rather than
@@ -78,8 +78,8 @@ export function buildRocks(env, heightAt, courseHeading) {
   for (let i = 0; i < COUNT; i++) {
     let x, z, scale;
     if (i < COUNT * 0.16) {
-      // A ridge of climbable rock ALONG the course, offset to one side so it
-      // is in shot without the robot walking through it.
+      // A ridge of rock ALONG the course, offset to one side so it is in shot
+      // without the robot walking through it.
       const s = (r() - 0.5) * 90;
       const off = (3.4 + r() * 4.0) * (r() < 0.5 ? 1 : -1);
       x = ux * s + rx * off;

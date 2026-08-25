@@ -59,9 +59,10 @@ export function buildTerrain(env, opts = {}) {
    */
   const heightAt = (x, z) => {
     const r = Math.hypot(x, z);
-    // Relief starts climbing much closer in than it used to. The far ranges
-    // still give the horizon its scale, but a climb gait needs a real slope
-    // within walking distance of the course, not 90 m away.
+    // Relief starts rising much closer in than it used to. The far ranges
+    // still give the horizon its scale, but the traverse needs real slope
+    // within walking distance of the course, not 90 m away — it is what the
+    // per-foot ground sampling in Footing.js has to cope with.
     const far = Math.min(1, Math.max(0, (r - 26) / 150));
     const relief = amp * (1 + far * 8.5);
     let h = 0, f = 1, a = relief;
