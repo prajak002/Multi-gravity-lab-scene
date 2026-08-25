@@ -41,12 +41,23 @@ for (const c of combos) {
     return 'ok';
   }, c);
   if (picked !== 'ok') { skipped++; continue; }
-  await page.waitForTimeout(700);
-  const state = await page.evaluate(() => {
+  // WAIT for the robot, do not sleep and hope.
+  //
+  // This was a flat 700 ms, which is a statement about localhost rather than
+  // about the app. Run against the deployed site and the first few G1 combos
+  // failed with "no robot mounted" — not because anything was broken, but
+  // because the G1 ships 64 separate STL meshes and fetching them over the
+  // network takes longer than the sleep. Once they were in the browser cache
+  // every later combo passed, which is the signature of a timing assumption
+  // and not of a fault.
+  //
+  // A check that only passes on localhost will lie about production, which is
+  // the one place it actually matters.
+  const state = await page.waitForFunction(() => {
     const r = window.__arena?.robot;
     return r ? { name: r.def.short, joints: r.jointNames.length } : null;
-  });
-  if (!state) errors.push(`${c.robot}/${c.env}/${c.motion}: no robot mounted`);
+  }, { timeout: 45000 }).then((h) => h.jsonValue()).catch(() => null);
+  if (!state) errors.push(`${c.robot}/${c.env}/${c.motion}: no robot mounted within 45 s`);
   else if (errors.length === before) ok++;
   await page.evaluate(() => { const l = document.querySelector('#ui .lobby'); if (l) l.classList.remove('hidden'); });
   await page.waitForTimeout(120);
