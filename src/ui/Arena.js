@@ -23,6 +23,7 @@ import { loadRobot, robotById } from '../render/Robots.js';
 import { loadScene, loadPlace, loadPlaces, ClipPlayer, jointSaturation, posToRender } from '../scenes/SceneLoader.js';
 import { visibleSole, clearSwingFoot } from '../sim/Footing.js';
 import { LaneField } from '../terrain/LaneField.js';
+import { instability } from '../sim/Ballistic.js';
 
 // A G1 is 1.32 m tall and about 0.5 m across at the arms. This is the radius
 // of the ball one of them needs to sit inside, which is what the framing has
@@ -54,6 +55,23 @@ const MOTION_TITLE = {
 // Corridor samples per lane. See LaneField.setLanes for why a traverse needs a
 // polyline rather than its chord.
 const LANE_PATH_POINTS = 24;
+
+/** Both arms' share of the body's pitch inertia — what a windmill can buy. */
+const ARM_SHARE = 0.138;
+
+/**
+ * The same motion on the other body, evaluated rather than scaled.
+ *
+ * With thrust as the input, take-off speed is NOT the same on both — the same
+ * force has less weight to fight in a weaker field, so it leaves faster AND
+ * hangs longer, and the two compound. Scaling this body's numbers by a ratio
+ * of g would understate the difference, so the model is simply run again.
+ */
+function otherBody(g, p) {
+  const s = instability(g, { thrust: p.thrust ?? 1, mu: 0.45, offset: p.offset });
+  return { apex: s.apex, hang: s.hang, tumble: s.tumble,
+           armAuthority: s.armAuthority, correctable: s.correctable, index: s.index };
+}
 
 /** Which environment's lighting a scene borrows. */
 const envForBody = (body) =>
@@ -611,14 +629,15 @@ export class Arena {
    * same robot on Mars, which is not standing on this terrain. So the second
    * lane is empty and the readout carries the comparison instead.
    */
-  async load(place, motion = 'compare') {
+  async load(place, motion = 'compare', thrust = this.thrust ?? 1) {
     this.ready = false;
     this.place = place;
     this.motionKey = motion;
+    this.thrust = thrust;
 
     const { scene, field } = place.micro
       ? await loadScene(motion)
-      : await loadPlace(place.id, motion);
+      : await loadPlace(place.id, motion, thrust);
     this.scene_ = scene;
     this.field = field;
 
@@ -1025,28 +1044,52 @@ export class Arena {
     const here = s.body === 'Mars' ? 'Mars' : 'Moon';
     const other = here === 'Moon' ? 'Mars' : 'Moon';
     const og = here === 'Moon' ? 3.721 : 1.625;
-    // Same takeoff speed — that is the finding, not an assumption — so the
-    // other body's figures follow from its g alone.
-    const oApex = (p.v0 * p.v0) / (2 * og), oHang = (2 * p.v0) / og;
-    // Stance time is a property of the machine, not of the field, so it is the
-    // one thing that carries across unchanged — and recovering it from this
-    // body's duty is what lets the other body's duty be derived rather than
-    // guessed. duty = stance / (stance + flight).
+    const ratio = s.g / og;
+
+    // The other body's figures, from the same thrust. v0 is not held fixed any
+    // more — with thrust as the input it rises as gravity falls, because the
+    // same force has less weight to fight — so the comparison is made through
+    // the model rather than by scaling.
+    const o = otherBody(og, p);
     const stance = (p.duty * p.hang) / Math.max(1 - p.duty, 1e-6);
-    const oDuty = stance / (stance + oHang);
+    const oDuty = stance / (stance + o.hang);
+
     const row = (label, a, b, unit, d = 2) =>
       `<div class="row"><span>${label}</span><b>${a.toFixed(d)}${unit}</b>` +
       `<u>${b.toFixed(d)}${unit}</u></div>`;
+    const deg = (label, a, b) =>
+      `<div class="row"><span>${label}</span><b>${(a * 180 / Math.PI).toFixed(0)}°</b>` +
+      `<u>${(b * 180 / Math.PI).toFixed(0)}°</u></div>`;
+
+    const idx = p.index ?? 0;
+    const verdict = idx <= 1 ? 'HOLDS' : idx <= 4 ? 'STAGGERS' : 'GOES OVER';
+    const cls = idx <= 1 ? 'ok' : idx <= 4 ? 'warn' : 'bad';
+
     return `<div class="phys">
-      <div class="head"><span></span><b>${here.toUpperCase()}</b><u>${other.toUpperCase()}</u></div>
-      ${row('jump height', p.apex, oApex, ' m')}
-      ${row('time in the air', p.hang, oHang, ' s')}
+      <div class="head"><span>thrust ${(p.thrust ?? 1).toFixed(2)}× · ${Math.round(p.force)} N</span>
+        <b>${here.toUpperCase()}</b><u>${other.toUpperCase()}</u></div>
+      ${row('jump height', p.apex, o.apex, ' m')}
+      ${row('time in the air', p.hang, o.hang, ' s')}
       ${row('fraction on the ground', p.duty, oDuty, '')}
       ${row('top speed', p.speedCeiling, p.speedCeiling * (og / s.g), ' m/s')}
-      ${row('time to fall over', p.toppleTime, p.toppleTime * Math.sqrt(s.g / og), ' s')}
-      <p class="why">Take-off speed is <b>${p.v0.toFixed(2)} m/s</b> on both, because
-      what limits it is the knee's rated <b>${p.boundBy}</b> and not the field.
-      Everything above is the difference that one fact makes.</p>
+
+      <div class="head sub"><span>what the thrust does to attitude</span><b></b><u></u></div>
+      ${deg('tips in flight', p.tumble, o.tumble)}
+      ${deg('arms take back', p.armAuthority, o.armAuthority)}
+      ${deg('ankle can take back', p.correctable, o.correctable)}
+      <div class="row verdict ${cls}"><span>instability index</span>
+        <b>${idx.toFixed(1)}</b><u>${o.index.toFixed(1)}</u></div>
+      <div class="verdictline ${cls}">${verdict}</div>
+
+      <p class="why">The push misses the centre of mass by
+      <b>${((p.offset ?? 0) * 1000).toFixed(0)} mm</b>. In free flight nothing can
+      stop the rotation that starts, so it runs for the whole
+      <b>${p.hang.toFixed(2)} s</b>; the arms claw back
+      ${(ARM_SHARE * 100).toFixed(0)}% of their own sweep by conservation, and on
+      the ground the ankle can only push as hard as
+      <b>m·g·d = ${p.ankleTorqueLimit.toFixed(1)} N·m</b> before the foot tips off
+      its own edge. That last limit is gravitational, not mechanical — at one
+      sixth g the motors are unchanged and the authority is not.</p>
     </div>`;
   }
 
@@ -1188,6 +1231,12 @@ export async function startArena(canvas, ui) {
   const tabsEl = ui.querySelector('#tabs');
   const placesEl = ui.querySelector('#places');
   const motionsEl = ui.querySelector('#motions');
+  // Looked up here rather than beside the handler below, because applyMode()
+  // reads thrustWrap and is called while the mode toggle is being wired —
+  // which is before the handler's own declarations would have run.
+  const thrustWrap = ui.querySelector('#thrustwrap');
+  const thrustInput = ui.querySelector('#thrust');
+  const thrustVal = ui.querySelector('#thrustval');
 
   const bodies = index.bodies.filter((b) => index.places.some((p) => p.body === b));
   let body = bodies[0];
@@ -1283,6 +1332,8 @@ export async function startArena(canvas, ui) {
     // taken away rather than left to do nothing.
     const pair = !!(arena.players.A && arena.players.B);
     modeBtn.style.display = pair ? '' : 'none';
+    // A packet clip is a recording; there is no thrust to turn up in it.
+    thrustWrap.style.display = arena.scene_?.generated ? '' : 'none';
     const lanes = arena.mode === 'lanes';
     modeBtn.textContent = lanes ? 'SIDE BY SIDE' : 'OVERLAY + WIPE';
     modeBtn.title = lanes
@@ -1302,6 +1353,36 @@ export async function startArena(canvas, ui) {
     arena._updateLanes();
   });
   applyMode();
+
+  /**
+   * THRUST, live.
+   *
+   * The slider re-solves the whole clip through src/sim/HopMotion.js — the
+   * same code that baked it — rather than scaling a canned animation, because
+   * what thrust changes is not the size of the motion but its whole structure:
+   * a harder push leaves faster, hangs longer, spends less of the cycle on the
+   * ground, and arrives with more attitude error than the ankle can take out.
+   * None of that is a multiplier on anything.
+   *
+   * Debounced to the next frame. Dragging fires input events far faster than a
+   * three-hundred-frame solve, and queueing them all would put the viewer
+   * seconds behind the slider.
+   */
+  let thrustPending = null, thrustBusy = false;
+  const applyThrust = async () => {
+    if (thrustBusy || thrustPending === null) return;
+    thrustBusy = true;
+    const want = thrustPending; thrustPending = null;
+    try { await arena.load(place, motion, want); } catch (e) { console.error(e); }
+    thrustBusy = false;
+    if (thrustPending !== null) applyThrust();
+  };
+  thrustInput.addEventListener('input', (e) => {
+    const v = Number(e.target.value);
+    thrustVal.textContent = `${v.toFixed(2)}×`;
+    thrustPending = v;
+    requestAnimationFrame(applyThrust);
+  });
 
   const play = ui.querySelector('#play');
   play.addEventListener('click', () => {

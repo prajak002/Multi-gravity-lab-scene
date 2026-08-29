@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Arm Studio — drive a G1 with your own arms</title>
+  <link rel="stylesheet" href="/src/ui/arms.css" />
+</head>
+<body>
+  <div id="stagewrap"><canvas id="stage"></canvas></div>
+
+  <!-- The camera preview sits over the render rather than beside it: what you
+       want to check is whether the model saw the pose you thought you made,
+       and that reads fastest with the skeleton drawn straight onto the frame. -->
+  <div id="cam">
+    <video id="video" playsinline muted></video>
+    <canvas id="overlay"></canvas>
+    <div id="camlabel">WHAT THE MODEL SEES</div>
+  </div>
+
+  <div id="panel">
+    <h1>ARM STUDIO</h1>
+    <p class="blurb">Your arms, on a Unitree G1's arms. Seven joints a side,
+      every one clamped to the range its URDF declares — so a pose the machine
+      cannot make stops where the hardware would, and says which joint ran out.</p>
+    <div id="joints"></div>
+    <div id="authority"></div>
+  </div>
+
+  <div id="bar">
+    <button id="start">ENABLE CAMERA</button>
+    <button id="mirror" class="on">MIRRORED</button>
+    <span id="stat"></span>
+  </div>
+
+  <div id="boot"><span>loading the robot…</span></div>
+  <script type="module" src="/src/arms.js"></script>
+</body>
+</html>

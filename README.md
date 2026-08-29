@@ -62,37 +62,121 @@ and they fall over.
 URDF, and `tools/build_motions.mjs` solves them against the real terrain.
 Nothing about them is authored — given `g`, everything below follows.
 
-### What actually limits a jump is not what you would guess
+### Thrust is the input, and gravity is in the answer twice
 
-Two limits compete through a push-off, and they bind at opposite ends of it:
+Two knees at `thrust` times the URDF's own `effort="139"` N·m produce a
+vertical force through the leg's Jacobian, and what the robot gets out of it is
+the NET acceleration:
 
-- **Force.** Two knees at the URDF's own `effort="139"` N·m. Through the crouch
-  the leg is folded and the moment arm is long, so the available vertical force
-  is modest; as the leg straightens the arm collapses and the force goes up
-  without bound.
-- **Speed.** The same joints are rated `velocity="20"` rad/s, and the leg
-  extends by `|dL/dknee|` metres per radian — which goes to **zero** as the leg
-  straightens.
+```
+a = F/m − g
+```
 
-Integrated up the extension against the real chain:
+Subtracting `g` is where gravity enters, and it enters **twice**. On the Moon
+the same thrust has five sixths less weight to fight, so the machine
+accelerates harder and leaves faster; and the slower field then turns that
+faster take-off into a much higher apex. The two compound, through
+`apex = v0²/2g` with `v0` itself rising as `g` falls:
 
-| | take-off | apex | hang | duty | on the ground | bound by |
+| | take-off | apex | hang | on the ground |
+|---|---|---|---|---|
+| Earth | 2.54 m/s | 0.33 m | 0.52 s | 51 % |
+| Mars | 2.64 m/s | 0.94 m | 1.42 s | 22 % |
+| **Moon** | **2.68 m/s** | **2.20 m** | **3.29 s** | **11 %** |
+
+Same push. A G1 is 1.32 m tall, so on the Moon it clears two thirds again its
+own height and is on the ground for one ninth of the cycle. Turn the thrust to
+2× and the lunar apex goes to **2.97 m**.
+
+The speed ceiling is still enforced and still real — the leg extends by
+`|dL/dknee|` metres per radian, which goes to **zero** as the leg straightens,
+so the robot can never move faster than its knee can extend (`velocity="20"`
+rad/s). What that ceiling does under high thrust is interesting rather than
+limiting: the energy curve meets it earlier, at a more folded knee where the
+ceiling is higher, so the machine takes off *before* the leg is straight. Which
+is what a real jumper does, and what a purely kinematic model of leg extension
+cannot reproduce, since that model has the extension rate falling to zero
+exactly when the robot is supposed to be fastest.
+
+### Why thrust destabilises it, and why that gets worse as gravity falls
+
+A bigger push in a weaker field goes higher. It says nothing about whether the
+machine is still upright when it lands — and that is the question the Apollo
+film actually answers, because the crews fell over constantly and not because
+they were clumsy.
+
+Three quantities, and gravity is in all of them.
+
+**What the push does to attitude.** No push is perfectly through the centre of
+mass: the two legs never produce identical force and the body is never exactly
+upright at the moment it leaves. Four millimetres of offset on a 1.32 m machine
+is an ordinary misalignment. It applies a torque `F·e` for the duration of the
+push, and that angular impulse over the body's own pitch inertia gives a rate
+which **barely depends on g at all** — it is set by the machine.
+
+**What flight does with it.** In free flight there is no external torque, so
+that rate is conserved and simply integrates over `t_flight = 2v0/g`. Gravity
+enters as 1/g: the same 4 mm that tips the body 13° on Earth tips it **79° on
+the Moon**.
+
+**What the robot can do about it** — and here the two remedies pull opposite
+ways.
+
+- In the air, the **arms**. Angular momentum is conserved, so the only way to
+  rotate the torso is to rotate something else the other way. Both arms are
+  **13.8 %** of the body's pitch inertia — summed from `G1_TREE`'s own link
+  inertia tensors with the parallel-axis theorem — so a sweep buys back that
+  fraction of itself, and a stroke out with the elbow extended against a return
+  with it tucked nets most of it rather than cancelling. A longer flight allows
+  more strokes, so this authority *grows* as gravity falls. It is exactly the
+  Apollo windmilling, and it is why the arms in these clips are driven by how
+  much correction is still owed rather than by a walk cycle.
+- On the ground, the **ankle** — and this is the trap. The usable ankle torque
+  is not the actuator's 139 N·m; it is whatever keeps the centre of pressure
+  inside the sole:
+
+```
+τ_max = m · g · d_foot
+```
+
+That is a **gravitational** limit, not a mechanical one. At one sixth g the
+robot has one sixth the authority to correct its attitude however strong its
+motors are, because leaning on the ankle harder just tips the foot off its own
+edge. On the Moon it is **4.9 N·m**.
+
+So the error to absorb grows as 1/g while the authority to absorb it falls as
+g, and the instability index
+
+```
+S = (tumble in flight − what the arms took back) / (what the stance can correct)
+```
+
+goes as roughly **1/g²**:
+
+| thrust | | tips in flight | arms recover | ankle can fix | **S** | |
 |---|---|---|---|---|---|---|
-| Earth | 1.90 m/s | 0.183 m | 0.39 s | 0.59 | 59 % | knee torque |
-| Mars | 1.94 m/s | 0.508 m | 1.05 s | 0.34 | 34 % | knee speed |
-| **Moon** | **1.96 m/s** | **1.181 m** | **2.41 s** | **0.18** | **18 %** | knee speed |
+| 1× | Earth | 13° | 14° | 19° | **0.0** | holds |
+| 1× | Mars | 35° | 23° | 7° | **1.8** | staggers |
+| 1× | **Moon** | 79° | 52° | 3° | **9.3** | goes over |
+| 2× | **Moon** | 158° | 61° | 2° | **45.8** | goes over |
 
-Off Earth it is the **speed** limit that binds, and joint speed does not care
-about gravity — so the take-off is the same to within 3 % on all three bodies
-and every other number in that table is the field. A G1 is 1.32 m tall; on the
-Moon it clears very nearly its own height and stays up for two and a half
-seconds. Earth is the exception and the interesting one: at 1 g the machine
-spends the whole push fighting its own weight and runs out of **torque** first.
+`S < 1` means the stance can absorb what the flight built up. `S > 1` means it
+cannot, and the robot lands already committed to falling — which is what the
+generated motions then do, because attitude in `HopMotion.js` is **integrated
+across the whole clip** rather than posed per frame. A robot that starts every
+hop upright can never fall over, however unstable the physics says it is.
 
-The apex ratio is 2.32 against a gravity ratio of 3.721/1.625 = 2.29. It is not
-exactly 2.29 because the small force-limited part of the push does respond to
-`g`, and that residual is the signature of a real machine rather than a
-projectile.
+The absolute numbers are linear in that 4 mm; the **ratio** between the bodies
+is not, and the ratio is the finding.
+
+### Thrust is live
+
+The slider re-solves the entire clip through `src/sim/HopMotion.js` — the same
+code that baked it — in about 470 ms, rather than scaling a canned animation.
+It has to: what thrust changes is not the size of the motion but its whole
+structure. A harder push leaves faster, hangs longer, spends less of the cycle
+on the ground, and arrives with more attitude error than the ankle can take
+out. None of that is a multiplier on anything.
 
 ### Three things a generated hop got wrong before it got them right
 
@@ -158,14 +242,16 @@ v_max <= mu * g * t_stance
 ```
 
 `t_stance` is a property of the machine and does not change, so the speed
-ceiling falls with `g` directly: **2.41 m/s on Earth, 0.89 on Mars, 0.39 on the
-Moon.** One sixth gravity does not make you fast. It hands you a two-and-a-half
-second flight phase and almost nothing to push with.
+ceiling falls with `g` directly: **2.80 m/s on Earth, 0.73 on Mars, 0.26 on the
+Moon.** One sixth gravity does not make you fast. It hands you a three-second
+flight phase and almost nothing to push with.
 
-Note what cancels. Range is `v_max x t_flight`, and `v_max` goes as `g` while
-`t_flight` goes as `1/g` — so the stride comes out **0.93 m on all three
-bodies**, the same structural cancellation the walking page runs into with
-stride at fixed Froude number.
+Note how nearly it cancels. Range is `v_max × t_flight`, and `v_max` goes as
+`g` while `t_flight` goes as `1/g`, so the stride barely moves at all — 1.45 m
+on Earth, 1.04 on Mars, 0.87 on the Moon — despite the Moon's hop being nearly
+seven times as tall. It is the same structural cancellation the walking page
+runs into with stride at fixed Froude number: the Moon buys you height and
+hang, and charges you the speed to use them.
 
 ### Falling over is slow, and that is the whole point
 
@@ -176,6 +262,82 @@ buys over a second of extra warning — which is what the crews used to get a
 hand or a foot down, and why they fell so gracefully when they could not. The
 `TRIP + RECOVER` motion catches a toe on the terrain and drives the pitch on
 that clock rather than on the clip's.
+
+## Arm Studio: your arms, on the robot's arms
+
+`/arms.html`. A webcam, MediaPipe's pose model, and the G1's own arm chain —
+seven joints a side, every one clamped to the range its URDF declares.
+
+### Directions transfer; positions do not
+
+The naive version copies landmark positions onto the robot, and it cannot work.
+A person is 1.7–1.9 m with a 0.60 m arm; a G1 is 1.32 m with a 0.36 m one, and
+their shoulders sit differently relative to their hips. Positions carry
+proportions with them.
+
+So `src/sim/ArmRetarget.js` matches where each bone **points** — shoulder to
+elbow, elbow to hand — which is the same principle `tools/fit_pose.mjs` uses to
+fit the G1 to Apollo footage, and for the same reason. Two directions per arm
+is exactly four constraints once each has lost its length, which is exactly the
+four joints that decide an arm's shape.
+
+Everything is computed in a frame built from the **body**, never the camera: up
+from hips to shoulders, left along the shoulder line, forward from their cross
+product. Lean toward the lens, turn side on, stand at an angle — the frame
+turns with you and the joint angles do not change. It also makes the result
+independent of MediaPipe's own axis convention, which is the sort of thing that
+silently mirrors one arm.
+
+### Three joints for a two-joint job
+
+The shoulder has three axes and pointing an upper arm needs two, so the spare
+one — **yaw** — rotates about the upper arm itself. It changes nothing about
+where the arm points and everything about where the forearm swings to, so a
+solver given only direction targets will happily wind it to a stop to satisfy
+the forearm. It did: a hanging arm with the forearm forward came out at
+`shoulder_yaw = −150°`, hard against its −2.62 rad limit. Numerically correct,
+and a grotesque pose.
+
+Four more residual rows, one per joint, pull weakly toward a rest posture — ten
+residuals against four unknowns. The direction terms outweigh the posture terms
+more than ten to one, so a reachable pose is still reached exactly; the posture
+terms only decide between poses that are otherwise equally good. Which is what
+null-space damping is for. Yaw now stays inside ±55° on every test pose.
+
+### What it refuses to fake
+
+- **The limits are the URDF's**, including the shoulder roll's, which is
+  asymmetric between the arms — `[-1.59, 2.25]` on the left against
+  `[-2.25, 1.59]` on the right, because the joint mirrors and its range does
+  not. A joint on a stop turns red and the arm stops there: a pose the machine
+  cannot make should read as the machine refusing, not as the tracking failing.
+- **The rate is bounded.** A webcam drops frames and a landmark can jump a
+  decimetre between two of them; followed straight that asks the shoulder for
+  thousands of degrees a second — the same fault `audit_rates.mjs` measures in
+  the baked clips, except live and with no build step to catch it. The command
+  is low-passed and rate-limited on the way out, and the page reports what
+  fraction of frames the limiter bit on.
+- **It runs offline.** The wasm runtime and the 9 MB model are served from this
+  origin, not a CDN, so the page cannot quietly start depending on a third
+  party being up.
+
+### And this is where the arms connect to the jumping
+
+In free flight the arms are the only attitude control a body has, and the page
+reads the sweep you are actually making and prices it: `13.8 %` of that sweep
+comes back as body rotation, against the 79° a Moon hop builds up. It is the
+same authority `Ballistic.js` gives the arms when it decides whether a jump
+lands on its feet, so the number here and the number there are the same number.
+
+```bash
+node tools/check_arms.mjs http://localhost:4199
+```
+
+feeds six known poses through the page's own `applyLandmarks()` and measures
+the result on the robot it is actually rendering: upper arm within 0–8° of the
+human's, no joint outside its URDF range, no wind-up. It cannot assert the
+tracking itself — Chromium's fake camera is a test pattern with nobody in it —
+but everything downstream of the landmarks is where all the logic lives.
 
 ## One motion, three gravitational fields
 
@@ -284,7 +446,10 @@ Nothing in that data responds to gravity.
 | Ground-bounce IBL | `src/render/IBL.js` |
 | Terrain + crater stamping | `src/render/Terrain.js` |
 | Gravity-conditioned gait | `src/sim/Gait.js` |
-| Push-off physics, hop / lope / trip | `src/sim/Ballistic.js` |
+| Thrust, flight and instability | `src/sim/Ballistic.js` |
+| The hop/lope/trip generator, shared | `src/sim/HopMotion.js` |
+| Webcam pose to G1 arm joints | `src/sim/ArmRetarget.js` |
+| Arm Studio | `src/ui/ArmStudio.js`, `arms.html` |
 | Ground under two side-by-side runs | `src/terrain/LaneField.js` |
 | The place catalogue, all three bodies | `tools/sites.mjs` |
 | Motions baked onto a site | `tools/build_motions.mjs` |

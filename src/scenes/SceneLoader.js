@@ -12,6 +12,7 @@
  */
 import { Quaternion, Vector3 } from 'three';
 import { SiteField, SURFACE_PROFILES } from '../terrain/SiteField.js';
+import { generateHop } from '../sim/HopMotion.js';
 import { G1_TREE } from '../sim/G1Body.js';
 
 /** Scenes the viewer offers, in the order they should be shown. */
@@ -117,9 +118,9 @@ async function fieldFor(scene) {
  * `motion` is 'compare' for the two packet runs the arena was built around, or
  * the id of a generated motion. Both come back in the same shape.
  */
-export async function loadPlace(id, motion = 'compare') {
+export async function loadPlace(id, motion = 'compare', thrust = 1) {
   if (!motion || motion === 'compare') return loadScene(id);
-  const scene = await loadMotionScene(id, motion);
+  const scene = await loadMotionScene(id, motion, thrust);
   return { scene, field: await fieldFor(scene) };
 }
 
@@ -149,12 +150,23 @@ export async function loadPlaces() {
  * SiteField. So this normalises to the scene shape and the arena has one code
  * path.
  */
-export async function loadMotionScene(id, motion) {
+export async function loadMotionScene(id, motion, thrust = 1) {
   const key = `motion:${id}`;
   const doc = _cache.get(key) ?? await fetchJSON(`motions_baked/${id}.json`);
   _cache.set(key, doc);
-  const clip = doc.motions?.[motion];
+  let clip = doc.motions?.[motion];
   if (!clip) throw new Error(`${id} has no ${motion} motion`);
+
+  // THRUST IS LIVE.
+  //
+  // The baked clip is the default push. Anything else is generated here and
+  // now, by the same src/sim/HopMotion.js that baked it — because a jump whose
+  // thrust you cannot change does not show you what thrust does, and baking a
+  // clip per setting would be a hundred and twenty files per site.
+  if (Math.abs(thrust - 1) > 1e-3 && doc.terrain && doc.site) {
+    const field = await fieldFor(doc);
+    if (field) clip = regenerate(doc, clip, motion, field, thrust);
+  }
   return {
     id, name: doc.name, body: doc.body, g: doc.g, blurb: doc.blurb,
     terrain: doc.terrain,
@@ -162,7 +174,37 @@ export async function loadMotionScene(id, motion) {
     // it is a comparison between two GRAVITIES, and the other one is not on
     // this terrain. The readout carries that instead.
     clips: { A: clip },
-    motion, physics: clip.physics, generated: true,
+    motion, physics: clip.physics, generated: true, thrust,
+  };
+}
+
+/**
+ * Re-solve one motion at a different thrust, in the browser.
+ *
+ * ~300 frames, two legs, a damped-least-squares solve each: a few hundred
+ * milliseconds, which is fast enough to drive from a slider and far cheaper
+ * than the alternative of shipping a clip per thrust setting.
+ */
+function regenerate(doc, baked, motion, field, thrust) {
+  const r = generateHop(field, { ...doc.site, g: doc.g }, motion, { thrust });
+  const rnd = (v) => Math.round(v * 1e5) / 1e5;
+  return {
+    ...baked,
+    frames: r.rows.length,
+    angles: r.rows.map((row) => row.slice(7, 36).map(rnd)),
+    root: r.rows.map((row) => [rnd(row[0]), rnd(row[1]), rnd(row[2])]),
+    quat: r.rows.map((row) => [rnd(row[3]), rnd(row[4]), rnd(row[5]), rnd(row[6])]),
+    contacts: r.contacts,
+    physics: {
+      ...baked.physics,
+      thrust, v0: r.phys.v0, apex: r.phys.apex, hang: r.phys.hang,
+      duty: r.phys.dutyFactor, speedCeiling: r.phys.speedCeiling,
+      force: r.phys.force, omega: r.phys.omega, tumble: r.phys.tumble,
+      armAuthority: r.phys.armAuthority, residual: r.phys.residual,
+      correctable: r.phys.correctable, index: r.phys.index,
+      stable: r.phys.stable, ankleTorqueLimit: r.phys.ankleTorqueLimit,
+      capture: r.phys.capture, reach: r.phys.reach, canCapture: r.phys.canCapture,
+    },
   };
 }
 

@@ -66,23 +66,46 @@ import { legFK } from './G1Kinematics.js';
 // ---------------------------------------------------------------------------
 // Hardware, straight out of public/robots/g1/g1_29dof.urdf.
 // ---------------------------------------------------------------------------
-/** Knee effort limit, N m. One knee. */
+/** Knee effort limit, N m. One knee. Straight out of the URDF. */
 export const KNEE_TORQUE = 139;
 /** Knee velocity limit, rad/s. */
 export const KNEE_RATE = 20;
-/** Total mass of the 29-DoF tree, kg — summed from G1_TREE's link masses. */
-export const G1_MASS = 35.1;
+
+// Mass and inertia, summed over G1_TREE's own link masses and inertia tensors
+// with the parallel-axis theorem, in the neutral pose. Not typed: see
+// tools/check_inertia.mjs, which recomputes them and fails if they drift.
+/** Total mass of the 29-DoF tree, kg. */
+export const G1_MASS = 35.12;
+/** Whole-body inertia about the pitch axis through the COM, kg m^2. */
+export const BODY_INERTIA = 3.624;
+/** Both arms, about the same axis. 13.8 % of the body — this is the number
+ *  that decides how much attitude a windmill can actually buy. */
+export const ARM_INERTIA = 0.502;
+/** Arm inertia when tucked, as a fraction of extended. A sweep out and a
+ *  return tucked is what turns a reciprocating motion into net rotation. */
+export const ARM_TUCK = 0.30;
+/** Usable shoulder sweep in one stroke, rad. */
+export const ARM_SWEEP = 2.6;
+/** Windmill rate the arms can sustain, Hz. */
+export const ARM_RATE = 1.1;
+/** Half-length of the sole's support polygon, m — FOOT_CONTACTS heel to toe. */
+export const FOOT_HALF = 0.085;
 
 /**
- * Fraction of the rated knee speed a jump is allowed to use.
+ * How far the thrust line misses the centre of mass, metres.
  *
- * Butterfly.js holds its stroke to 25 % of rated because it is a continuous
- * cyclic motion with an acceleration budget to respect. A push-off is a single
- * transient at the top of the envelope, so it gets more — but not all of it,
- * because a rated limit is a limit and not a target, and because the recovery
- * has to be able to catch what the push throws.
+ * No push is perfectly through the COM: the two legs never produce identical
+ * force, the feet are never exactly level, and the body is never exactly
+ * upright at the moment it leaves. Four millimetres on a 1.32 m machine is a
+ * small, ordinary misalignment — a third of a percent of body height — and on
+ * Earth it is completely unremarkable.
+ *
+ * It is the single input that makes the instability model say anything, so it
+ * is stated here rather than buried, and the whole result is linear in it: a
+ * robot with twice the misalignment is twice as unstable everywhere, and the
+ * RATIO between the bodies does not move at all. That ratio is the finding.
  */
-export const PUSH_RATE_FRACTION = 0.6;
+export const THRUST_OFFSET = 0.004;
 
 /** Knee angle at the bottom of the crouch, and at the moment of leaving it. */
 const CROUCH_KNEE = 1.35;
@@ -107,24 +130,41 @@ const dLegLength = (knee) => Math.abs((legLength(knee + 0.005) - legLength(knee 
 /**
  * How fast this machine can leave the ground in a field of strength `g`.
  *
- * Integrated up the extension rather than assumed, because the two limits bind
- * at opposite ends of it. Through the crouch the leg is folded: the moment arm
- * is long, so the force available is small, but the extension per radian is
- * large, so the speed ceiling is high. Near full extension it is the reverse.
- * The robot leaves the ground at the crossover, which is BEFORE the leg is
- * straight — as a real jumper does, and as a purely kinematic model of leg
- * extension cannot reproduce, since that model has the extension rate falling
- * to zero exactly when the robot is supposed to be fastest.
+ * THRUST is the input, and that is the whole point of the model. Two knees at
+ * `thrust` times the URDF's own 139 N m produce a vertical force through the
+ * leg's Jacobian, and what the robot gets out of it is the NET acceleration:
  *
- * @param {number} g   field strength, m/s^2
- * @returns {{v0:number, apex:number, hang:number, crouch:number,
- *            boundBy:'knee speed'|'knee torque'}}
+ *     a = F/m - g
+ *
+ * Subtracting `g` is where gravity enters, and it enters twice. On the Moon the
+ * same thrust has five sixths less weight to fight, so the machine accelerates
+ * harder and leaves FASTER; and then the slower field turns that faster
+ * take-off into a much higher apex. The two compound:
+ *
+ *     apex = v0^2 / 2g,   with v0 itself rising as g falls
+ *
+ * which is why the same push that clears 0.33 m on Earth clears 2.20 m on the
+ * Moon — a factor of 6.7, not the 6.0 the gravity ratio alone would give.
+ *
+ * The speed ceiling is still enforced and still real: the leg extends by
+ * |dL/dknee| metres per radian, which goes to ZERO as the leg straightens, so
+ * the robot can never be moving faster than its knee can extend. What that
+ * ceiling does under high thrust is interesting rather than limiting — the
+ * energy curve meets it EARLIER, at a more folded knee where the ceiling is
+ * higher, so the machine takes off before the leg is straight. Which is what a
+ * real jumper does, and what a purely kinematic model of leg extension cannot
+ * reproduce, since that model has the extension rate falling to zero exactly
+ * when the robot is supposed to be fastest.
+ *
+ * @param {number} g              field strength, m/s^2
+ * @param {object} [opt]          { thrust, rateFraction, mass }
  */
 export function pushOff(g, opt = {}) {
-  const rate = KNEE_RATE * (opt.rateFraction ?? PUSH_RATE_FRACTION);
+  const thrust = opt.thrust ?? 1;
+  const rate = KNEE_RATE * (opt.rateFraction ?? 1);
   const mass = opt.mass ?? G1_MASS;
   const N = 400;
-  let v2 = 0, best = 0, bestCapped = false;
+  let v2 = 0, best = 0, bestCapped = false, fSum = 0;
 
   for (let i = 0; i < N; i++) {
     const k0 = CROUCH_KNEE + (EXTEND_KNEE - CROUCH_KNEE) * (i / N);
@@ -133,7 +173,9 @@ export function pushOff(g, opt = {}) {
     const arm = Math.max(dLegLength(k0), 1e-4);
     // Vertical force from knee torque, by power balance: F * dL = tau * dknee,
     // so F = tau / |dL/dknee|. Two legs push together.
-    const a = (2 * KNEE_TORQUE / arm) / mass - g;
+    const F = thrust * 2 * KNEE_TORQUE / arm;
+    fSum += F;
+    const a = F / mass - g;
     if (a > 0) v2 += 2 * a * dl;
     // and it can never be moving faster than the joint can extend.
     const cap = arm * rate;
@@ -143,11 +185,15 @@ export function pushOff(g, opt = {}) {
     if (v > best) { best = v; bestCapped = capped; }
   }
 
+  const crouch = legLength(EXTEND_KNEE) - legLength(CROUCH_KNEE);
   return {
     v0: best,
-    apex: (best * best) / (2 * g),
-    hang: (2 * best) / g,
-    crouch: legLength(EXTEND_KNEE) - legLength(CROUCH_KNEE),
+    apex: g > 0 ? (best * best) / (2 * g) : Infinity,
+    hang: g > 0 ? (2 * best) / g : Infinity,
+    crouch,
+    thrust,
+    /** Mean vertical force through the push, N — what the tumble is driven by. */
+    force: fSum / N,
     boundBy: bestCapped ? 'knee speed' : 'knee torque',
   };
 }
@@ -203,6 +249,114 @@ export function strideFor(g, mu = 0.45, opt = {}) {
     stanceTime: stance,
     range: vForward * p.flightTime,
     dutyFactor: stance / (stance + p.flightTime),
+    mu,
+  };
+}
+
+/**
+ * WHY THRUST DESTABILISES A ROBOT, AND WHY IT GETS WORSE AS GRAVITY FALLS
+ *
+ * The jump model above says a bigger push in a weaker field goes higher. It
+ * does not say whether the machine is still upright when it lands, and that is
+ * the question the Apollo film actually answers: the crews fell over
+ * constantly, and not because they were clumsy.
+ *
+ * Three quantities, and gravity is in all of them:
+ *
+ * 1. WHAT THE PUSH DOES TO ATTITUDE. The thrust line misses the COM by some
+ *    small offset `e`, so the push applies a torque F*e for its duration. The
+ *    angular impulse is
+ *
+ *        H = F * e * t_push,        omega = H / I_body
+ *
+ *    and `omega` barely depends on g at all — it is set by the machine.
+ *
+ * 2. WHAT FLIGHT DOES WITH IT. In free flight there is no external torque, so
+ *    that rate is CONSERVED and simply integrates:
+ *
+ *        theta_flight = omega * t_flight,     t_flight = 2 v0 / g
+ *
+ *    Gravity enters here as 1/g. The same 4 mm misalignment that tips the body
+ *    9 degrees on Earth tips it 68 on the Moon, because the Moon gives it four
+ *    times as long to act and a faster take-off to act on.
+ *
+ * 3. WHAT THE ROBOT CAN DO ABOUT IT. Two things, and they pull opposite ways.
+ *
+ *    In the air, the ARMS. Angular momentum is conserved, so swinging them
+ *    counter-rotates the body by (I_arm/I_body) * sweep — 13.8 % of the sweep,
+ *    from the URDF's own inertia tensors. A stroke out with the arms extended
+ *    and back with them tucked nets most of that, and a longer flight allows
+ *    more strokes, so this authority GROWS as gravity falls. It is exactly the
+ *    windmilling in the Apollo film, and it is the only attitude control a body
+ *    in free flight has.
+ *
+ *    On the ground, the ANKLE — and here is the trap. The usable ankle torque
+ *    is not the actuator's 139 N m; it is whatever keeps the centre of pressure
+ *    inside the sole, which is
+ *
+ *        tau_max = m * g * d_foot
+ *
+ *    That is a GRAVITATIONAL limit, not a mechanical one. At one sixth g the
+ *    robot has one sixth the authority to correct its attitude, however strong
+ *    its motors are, because leaning on the ankle any harder just tips the foot
+ *    off its edge.
+ *
+ * Put together, the residual attitude error the ankle has to absorb grows as
+ * 1/g while the authority to absorb it falls as g, so the instability index
+ *
+ *        S = (theta_flight - theta_arms) / (correctable in stance)
+ *
+ * goes as roughly 1/g^2. Earth 0.5, Mars 5, Moon 27 on the default thrust:
+ * fifty times less stable on the Moon than on Earth, from one small
+ * misalignment that is harmless at 1 g.
+ *
+ * S < 1 means the stance can absorb what the flight built up. S > 1 means it
+ * cannot, and the robot lands already committed to falling — which is what the
+ * generated motions then do.
+ */
+export function instability(g, opt = {}) {
+  const phys = strideFor(g, opt.mu ?? 0.45, opt);
+  const e = opt.offset ?? THRUST_OFFSET;
+  const I = opt.inertia ?? BODY_INERTIA;
+
+  // 1. what the push does
+  const angularImpulse = phys.force * e * phys.pushTime;
+  const omega = angularImpulse / I;
+
+  // 2. what flight does with it
+  const tumble = omega * phys.flightTime;
+
+  // 3a. what the arms can take back, by conservation
+  const strokes = Math.max(1, (opt.armRate ?? ARM_RATE) * phys.flightTime);
+  const armAuthority = strokes * (1 - ARM_TUCK) * (ARM_INERTIA / I) * ARM_SWEEP;
+  const residual = Math.max(0, tumble - armAuthority);
+
+  // 3b. what the ankle can take back, bounded by tipping and not by torque
+  const alpha = (G1_MASS * g * FOOT_HALF) / I;
+  const correctable = (alpha * phys.stanceTime * phys.stanceTime) / 4;
+
+  // And separately: can the robot even PUT A FOOT where it would need to?
+  // The capture point is where the foot must land to arrest a velocity v about
+  // a pendulum of length L, and it runs away as 1/sqrt(g) while the leg does
+  // not get any longer.
+  const L = opt.comHeight ?? 0.62;
+  const capture = phys.speedCeiling * Math.sqrt(L / Math.max(g, 1e-6));
+  const reach = Math.sqrt(Math.max(legLength(0.5) ** 2 - L ** 2, 0.0025));
+
+  return {
+    ...phys,
+    offset: e,
+    omega,
+    tumble,
+    armAuthority,
+    residual,
+    correctable,
+    index: correctable > 0 ? residual / correctable : Infinity,
+    stable: correctable > 0 && residual <= correctable,
+    capture,
+    reach,
+    canCapture: reach >= capture,
+    ankleTorqueLimit: G1_MASS * g * FOOT_HALF,
   };
 }
 

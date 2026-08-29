@@ -24,6 +24,7 @@ export default defineConfig({
         main: resolve(dir, 'index.html'),
         arena: resolve(dir, 'arena.html'),
         gravity: resolve(dir, 'gravity.html'),
+        arms: resolve(dir, 'arms.html'),
       },
     },
   },

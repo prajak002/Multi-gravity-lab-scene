@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Unitree G1 / H1 / Go2 locomotion across Moon, Mars, ISS and Earth \u2014 retargeted motion, gravity-conditioned, with a cinematic lobby",
+  "description": "Unitree G1 / H1 / Go2 locomotion across Moon, Mars, ISS and Earth — retargeted motion, gravity-conditioned, with a cinematic lobby",
   "scripts": {
     "dev": "vite --host",
     "build": "vite build",
@@ -13,6 +13,7 @@
     "check": "node tools/check_sites.mjs && node tools/check_contact.mjs http://localhost:4199"
   },
   "dependencies": {
+    "@mediapipe/tasks-vision": "^1.0.1",
     "three": "^0.185.1",
     "urdf-loader": "^0.13.1"
   },

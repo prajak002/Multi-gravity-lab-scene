@@ -1,0 +1,84 @@
+/* Arm Studio.
+   The render is the page and everything else floats over it: the point of the
+   thing is the robot, and a panel that steals half the width makes a 1.32 m
+   machine small. */
+:root {
+  --fg: #e8eef5; --dim: #93a0ad; --line: rgba(255,255,255,.10);
+  --ok: #7fd6a8; --hot: #f08a7a;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: #0b0d11; color: var(--fg);
+  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  overflow: hidden; }
+#stagewrap { position: fixed; inset: 0; }
+#stage { width: 100%; height: 100%; display: block; cursor: grab; }
+#stage:active { cursor: grabbing; }
+
+/* ---- camera preview ---------------------------------------------------- */
+#cam { position: fixed; right: 22px; top: 22px; width: 300px; aspect-ratio: 4/3;
+  border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+  background: #05070a; }
+#cam video, #cam canvas { position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; }
+/* The preview is mirrored so it reads as a reflection; the overlay mirrors its
+   own coordinates instead, so the skeleton lands on the person either way. */
+#cam.mirror video { transform: scaleX(-1); }
+#camlabel { position: absolute; left: 8px; bottom: 6px; font: 9px/1 var(--mono);
+  letter-spacing: .16em; color: var(--dim); text-shadow: 0 1px 3px #000; }
+
+/* ---- panel ------------------------------------------------------------- */
+#panel { position: fixed; left: 22px; top: 22px; bottom: 76px; width: 330px;
+  padding: 16px 18px; overflow-y: auto; overscroll-behavior: contain;
+  background: rgba(9,11,15,.82); backdrop-filter: blur(14px);
+  border: 1px solid var(--line); border-radius: 10px; }
+#panel::-webkit-scrollbar { width: 6px; }
+#panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 3px; }
+#panel h1 { margin: 0 0 6px; font: 600 14px/1.2 var(--mono); letter-spacing: .16em; }
+#panel .blurb { margin: 0 0 14px; color: #c3ccd6; font-size: 12.5px; }
+#panel h2 { margin: 14px 0 6px; font: 600 10px/1 var(--mono); letter-spacing: .14em;
+  color: var(--dim); }
+
+/* One row per joint: name, where it sits in its OWN range, and the angle. */
+.j { display: grid; grid-template-columns: 84px 1fr 34px; gap: 8px;
+  align-items: center; font: 10.5px/1.6 var(--mono); color: var(--dim); }
+.j b { color: var(--fg); font-weight: 500; text-align: right; }
+.track { position: relative; height: 4px; border-radius: 2px;
+  background: rgba(255,255,255,.10); }
+.track i { position: absolute; top: -3px; width: 3px; height: 10px; border-radius: 2px;
+  background: var(--ok); transform: translateX(-50%); transition: left .06s linear; }
+/* On a stop: the arm is not failing to track, it has run out of joint. */
+.j.hot { color: var(--hot); }
+.j.hot .track i { background: var(--hot); box-shadow: 0 0 8px var(--hot); }
+
+#authority { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+#authority .note { margin: 6px 0 10px; font: 10.5px/1.6 var(--mono); color: var(--dim); }
+#authority .note b { color: #b6c0cc; }
+#authority .row { display: grid; grid-template-columns: 1fr auto auto; gap: 10px;
+  align-items: baseline; font: 11px/1.7 var(--mono); color: var(--dim); }
+#authority .row b { min-width: 46px; text-align: right; }
+#authority .row u { text-decoration: none; min-width: 74px; text-align: right;
+  color: #6f7986; font-size: 10px; }
+#authority .row.ok b { color: var(--ok); }
+#authority .row.bad b { color: var(--hot); }
+
+/* ---- transport --------------------------------------------------------- */
+#bar { position: fixed; left: 22px; right: 22px; bottom: 20px; height: 40px;
+  display: flex; align-items: center; gap: 12px; padding: 0 14px;
+  background: rgba(9,11,15,.78); backdrop-filter: blur(14px);
+  border: 1px solid var(--line); border-radius: 10px; }
+#bar button { font: 10px/1 var(--mono); letter-spacing: .1em; color: var(--dim);
+  background: transparent; border: 1px solid var(--line); border-radius: 5px;
+  padding: 8px 12px; cursor: pointer; }
+#bar button:hover:not(:disabled) { color: var(--fg); border-color: rgba(255,255,255,.3); }
+#bar button.on { background: var(--fg); color: #0a0c10; border-color: var(--fg); }
+#bar button:disabled { opacity: .5; cursor: default; }
+#stat { font: 10.5px/1 var(--mono); color: var(--dim); }
+
+#boot { position: fixed; inset: 0; display: grid; place-items: center;
+  background: #0b0d11; font: 11px/1 var(--mono); letter-spacing: .14em; color: var(--dim); }
+
+@media (max-width: 900px) {
+  #panel { width: auto; right: 22px; bottom: auto; max-height: 40vh; }
+  #cam { top: auto; bottom: 76px; width: 200px; }
+}

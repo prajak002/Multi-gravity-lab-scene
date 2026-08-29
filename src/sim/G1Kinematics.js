@@ -142,6 +142,49 @@ export const LEG_CHAIN = {
   right: chainTo('right_ankle_roll_link'),
 };
 
+/**
+ * The arm, pelvis to hand: shoulder pitch/roll/yaw, elbow, wrist roll/pitch/yaw.
+ *
+ * Seven joints, and every one of them has a real limit in the URDF — the
+ * shoulder roll's is even ASYMMETRIC between the two arms ([-1.59, 2.25] on the
+ * left, [-2.25, 1.59] on the right), because the joint mirrors and the range
+ * does not. Anything driving these from outside has to respect that or it will
+ * silently clamp one arm and not the other, which is exactly the bug
+ * Butterfly.js documents at the elbow.
+ */
+export const ARM_CHAIN = {
+  left: chainTo('left_rubber_hand'),
+  right: chainTo('right_rubber_hand'),
+};
+
+/** Joint limits for the arm chains, in chain order, from the URDF. */
+export const ARM_LIMITS = {
+  left: ARM_CHAIN.left.map((j) => G1_TREE.find((l) => l.joint === j.joint)?.limit ?? [-Math.PI, Math.PI]),
+  right: ARM_CHAIN.right.map((j) => G1_TREE.find((l) => l.joint === j.joint)?.limit ?? [-Math.PI, Math.PI]),
+};
+
+/**
+ * Forward kinematics along one arm.
+ *
+ * Returns every joint origin in the PELVIS frame plus the orientation of the
+ * last one, which is what a direction-matching retarget needs: it compares the
+ * shoulder-to-elbow and elbow-to-hand vectors, not their endpoints.
+ */
+export function armFK(side, q) {
+  const chain = ARM_CHAIN[side];
+  let p = [0, 0, 0], R = IDENT;
+  const joints = [];
+  for (let i = 0; i < chain.length; i++) {
+    const c = chain[i];
+    const t = mapv(R, c.t);
+    p = [p[0] + t[0], p[1] + t[1], p[2] + t[2]];
+    R = mmul(R, c.R);
+    joints.push({ p: [...p], R, joint: c.joint });
+    R = mmul(R, rotAxis(c.axis, (q[i] ?? 0) * c.sign));
+  }
+  return { joints, p, R };
+}
+
 // ---------------------------------------------------------------------------
 // Forward kinematics
 // ---------------------------------------------------------------------------
