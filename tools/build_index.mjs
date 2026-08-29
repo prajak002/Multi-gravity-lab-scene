@@ -14,7 +14,6 @@
  */
 import fs from 'fs';
 import { SITES, BODIES } from './sites.mjs';
-import { MOTIONS } from '../src/sim/Ballistic.js';
 
 const exists = (p) => { try { return fs.statSync(p).isFile(); } catch { return false; } };
 
@@ -22,18 +21,17 @@ const places = [];
 for (const [id, s] of Object.entries(SITES)) {
   const hasDem = !s.dem || exists(`public/dem/${s.dem}.json`);
   const scene = exists(`public/scenes/${id}.json`);
-  const baked = exists(`public/motions_baked/${id}.json`);
-  // A surface place needs its terrain; a module needs nothing but its
-  // dimensions, which are in the catalogue.
+  // A surface place needs its terrain AND the A/B pair that plays on it; a
+  // module needs nothing but its dimensions, which are in the catalogue.
   if (s.dem && !hasDem) continue;
-  if (!s.micro && !scene && !baked) continue;
+  if (!s.micro && !scene) continue;
 
   const entry = {
     id, body: s.body, place: s.place, name: s.name, g: s.g,
     blurb: s.blurb, micro: !!s.micro,
-    // What the motion selector may offer here.
+    // Every surface place carries the same thing: WorldVLA against
+    // PragyaSpace, on that place's own terrain.
     compare: scene,
-    motions: baked ? Object.keys(MOTIONS) : [],
   };
   if (s.module) entry.module = s.module;
   if (s.dem) {
@@ -66,10 +64,8 @@ fs.writeFileSync('public/places.json', JSON.stringify(index));
 for (const b of BODIES) {
   const inBody = places.filter((p) => p.body === b);
   const withCompare = inBody.filter((p) => p.compare).length;
-  const withMotions = inBody.filter((p) => p.motions.length).length;
   console.log(`${b.padEnd(5)} ${String(inBody.length).padStart(2)} places  `
-    + `${String(withCompare).padStart(2)} with an A/B packet  `
-    + `${String(withMotions).padStart(2)} with generated motions`);
+    + `${String(withCompare).padStart(2)} with the A/B pair`);
 }
 console.log(`microgravity scenarios: ${microScenes.map((m) => m.id).join(', ') || 'none'}`);
 console.log('wrote public/places.json');

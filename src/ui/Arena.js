@@ -23,7 +23,6 @@ import { loadRobot, robotById } from '../render/Robots.js';
 import { loadScene, loadPlace, loadPlaces, ClipPlayer, jointSaturation, posToRender } from '../scenes/SceneLoader.js';
 import { visibleSole, clearSwingFoot } from '../sim/Footing.js';
 import { LaneField } from '../terrain/LaneField.js';
-import { instability } from '../sim/Ballistic.js';
 
 // A G1 is 1.32 m tall and about 0.5 m across at the arms. This is the radius
 // of the ball one of them needs to sit inside, which is what the framing has
@@ -41,37 +40,9 @@ const clampTo = (v, a, b) => Math.min(b, Math.max(a, v));
 const CLIP_KEYS = ['A', 'B'];
 // loaded.feet is ordered left, right — the same order as loaded.soles.
 const SIDES = ['left', 'right'];
-
-/** Generated motions, as the picker names them. */
-const MOTION_LABEL = { lope: 'LOPE', bound: 'BOUND', trip: 'TRIP + RECOVER' };
-const MOTION_TITLE = {
-  lope: 'The gait the Apollo crews adopted within minutes on every mission: '
-      + 'one foot at a time, airborne between every step.',
-  bound: 'Both feet together, everything into the vertical. The same push on '
-       + 'every body, so the whole difference in height is the field.',
-  trip: 'A caught toe and the fall that follows. Toppling scales as 1/sqrt(g), '
-      + 'so one sixth gravity buys well over a second of extra warning.',
-};
 // Corridor samples per lane. See LaneField.setLanes for why a traverse needs a
 // polyline rather than its chord.
 const LANE_PATH_POINTS = 24;
-
-/** Both arms' share of the body's pitch inertia — what a windmill can buy. */
-const ARM_SHARE = 0.138;
-
-/**
- * The same motion on the other body, evaluated rather than scaled.
- *
- * With thrust as the input, take-off speed is NOT the same on both — the same
- * force has less weight to fight in a weaker field, so it leaves faster AND
- * hangs longer, and the two compound. Scaling this body's numbers by a ratio
- * of g would understate the difference, so the model is simply run again.
- */
-function otherBody(g, p) {
-  const s = instability(g, { thrust: p.thrust ?? 1, mu: 0.45, offset: p.offset });
-  return { apex: s.apex, hang: s.hang, tumble: s.tumble,
-           armAuthority: s.armAuthority, correctable: s.correctable, index: s.index };
-}
 
 /** Which environment's lighting a scene borrows. */
 const envForBody = (body) =>
@@ -251,11 +222,12 @@ export class Arena {
   /**
    * True only when there really are two runs to compare.
    *
-   * A generated motion has one clip, and everything that exists to separate,
-   * wipe between or frame A PAIR has to switch off — otherwise the empty lane
-   * still gets its half of the separation, the camera still frames a robot
-   * that is not there, and the previous scene's robot B is left standing in
-   * the shot holding its last pose.
+   * Everything that exists to separate, wipe between or frame A PAIR has to
+   * switch off when there is only one clip — otherwise the empty lane still
+   * gets its half of the separation, the camera still frames a robot that is
+   * not there, and the previous scene's robot B is left standing in the shot
+   * holding its last pose. Every scene ships a pair today; this is what stops
+   * a half-built one from being drawn as though it did.
    */
   get paired() { return !!(this.players.A && this.players.B); }
 
@@ -618,26 +590,18 @@ export class Arena {
   /**
    * Show one place, playing one motion.
    *
-   * `motion` is 'compare' for the two packet runs this viewer was built
-   * around, the id of a generated motion (lope / bound / trip), or — inside a
-   * module, where there is no ground and therefore no gait — the id of one of
-   * the microgravity scenarios.
-   *
-   * A generated motion has ONE clip, and that is deliberate. The packet view
-   * compares two CONTROLLERS on one body; a generated motion is a statement
-   * about the body itself, and the thing it should be compared against is the
-   * same robot on Mars, which is not standing on this terrain. So the second
-   * lane is empty and the readout carries the comparison instead.
+   * `motion` is 'compare' for the two packet runs this viewer is built around,
+   * or — inside a module, where there is no ground and therefore no gait — the
+   * id of one of the microgravity scenarios.
    */
-  async load(place, motion = 'compare', thrust = this.thrust ?? 1) {
+  async load(place, motion = 'compare') {
     this.ready = false;
     this.place = place;
     this.motionKey = motion;
-    this.thrust = thrust;
 
     const { scene, field } = place.micro
       ? await loadScene(motion)
-      : await loadPlace(place.id, motion, thrust);
+      : await loadPlace(place.id, motion);
     this.scene_ = scene;
     this.field = field;
 
@@ -1007,90 +971,17 @@ export class Arena {
          <div class="lbl b">${clip('B').label || 'PragyaSpace'}<i></i></div>`
       : `<div class="lbl a"><i></i>${clip('A').label || ''}</div>`;
 
-    const gen = s.generated ? this._physics(s) : '';
     this.ui.querySelector('#panel').innerHTML = `
       <h1>${this.place?.micro ? this.place.name : s.name}</h1>
       <div class="sub">${s.body} · g = ${s.g.toFixed(2)} m/s²${s.micro ? ' · free fall' : ''}</div>
-      <p class="blurb">${(s.generated ? clip('A').blurb : s.blurb) || s.blurb || ''}</p>
-      ${gen || `<div class="cols">
+      <p class="blurb">${s.blurb || ''}</p>
+      <div class="cols">
         <div class="col a"><h2>${clip('A').label || 'A'}</h2>${stat('A')}</div>
         <div class="col b"><h2>${clip('B').label || 'B'}</h2>${stat('B')}</div>
-      </div>`}
+      </div>
       ${s.micro ? '' : this._hardwareNote(s)}
       ${this.place?.micro ? this._moduleNote() : ''}
       ${m ? this._provenance(m) : ''}`;
-  }
-
-  /**
-   * What gravity is doing to this motion, and what it would do elsewhere.
-   *
-   * The whole reason the generated motions exist. A packet walk looks nearly
-   * the same on the Moon and on Mars because it was authored once and
-   * re-planted twice; these were not authored at all. Given `g`, the URDF's own
-   * knee effort and velocity limits and the link geometry, src/sim/Ballistic.js
-   * works out how fast the machine can leave the ground and everything else
-   * follows — so the figures below are computed, and the Moon column is not a
-   * multiple anybody typed.
-   *
-   * The last row is the one that surprises people, and it is why the Apollo
-   * crews loped rather than ran. Forward acceleration comes from friction and
-   * friction comes from weight, so one sixth g does not make you fast — it
-   * makes you SLOW, and leaves you a two-and-a-half second flight phase to
-   * spend on getting nowhere in particular.
-   */
-  _physics(s) {
-    const p = s.physics;
-    if (!p) return '';
-    const here = s.body === 'Mars' ? 'Mars' : 'Moon';
-    const other = here === 'Moon' ? 'Mars' : 'Moon';
-    const og = here === 'Moon' ? 3.721 : 1.625;
-    const ratio = s.g / og;
-
-    // The other body's figures, from the same thrust. v0 is not held fixed any
-    // more — with thrust as the input it rises as gravity falls, because the
-    // same force has less weight to fight — so the comparison is made through
-    // the model rather than by scaling.
-    const o = otherBody(og, p);
-    const stance = (p.duty * p.hang) / Math.max(1 - p.duty, 1e-6);
-    const oDuty = stance / (stance + o.hang);
-
-    const row = (label, a, b, unit, d = 2) =>
-      `<div class="row"><span>${label}</span><b>${a.toFixed(d)}${unit}</b>` +
-      `<u>${b.toFixed(d)}${unit}</u></div>`;
-    const deg = (label, a, b) =>
-      `<div class="row"><span>${label}</span><b>${(a * 180 / Math.PI).toFixed(0)}°</b>` +
-      `<u>${(b * 180 / Math.PI).toFixed(0)}°</u></div>`;
-
-    const idx = p.index ?? 0;
-    const verdict = idx <= 1 ? 'HOLDS' : idx <= 4 ? 'STAGGERS' : 'GOES OVER';
-    const cls = idx <= 1 ? 'ok' : idx <= 4 ? 'warn' : 'bad';
-
-    return `<div class="phys">
-      <div class="head"><span>thrust ${(p.thrust ?? 1).toFixed(2)}× · ${Math.round(p.force)} N</span>
-        <b>${here.toUpperCase()}</b><u>${other.toUpperCase()}</u></div>
-      ${row('jump height', p.apex, o.apex, ' m')}
-      ${row('time in the air', p.hang, o.hang, ' s')}
-      ${row('fraction on the ground', p.duty, oDuty, '')}
-      ${row('top speed', p.speedCeiling, p.speedCeiling * (og / s.g), ' m/s')}
-
-      <div class="head sub"><span>what the thrust does to attitude</span><b></b><u></u></div>
-      ${deg('tips in flight', p.tumble, o.tumble)}
-      ${deg('arms take back', p.armAuthority, o.armAuthority)}
-      ${deg('ankle can take back', p.correctable, o.correctable)}
-      <div class="row verdict ${cls}"><span>instability index</span>
-        <b>${idx.toFixed(1)}</b><u>${o.index.toFixed(1)}</u></div>
-      <div class="verdictline ${cls}">${verdict}</div>
-
-      <p class="why">The push misses the centre of mass by
-      <b>${((p.offset ?? 0) * 1000).toFixed(0)} mm</b>. In free flight nothing can
-      stop the rotation that starts, so it runs for the whole
-      <b>${p.hang.toFixed(2)} s</b>; the arms claw back
-      ${(ARM_SHARE * 100).toFixed(0)}% of their own sweep by conservation, and on
-      the ground the ankle can only push as hard as
-      <b>m·g·d = ${p.ankleTorqueLimit.toFixed(1)} N·m</b> before the foot tips off
-      its own edge. That last limit is gravitational, not mechanical — at one
-      sixth g the motors are unchanged and the authority is not.</p>
-    </div>`;
   }
 
   /** The module's real size, which is the only thing that varies between them. */
@@ -1115,12 +1006,10 @@ export class Arena {
    * sensible route zig-zags rather than going straight up.
    */
   _hardwareNote(s) {
-    // A generated motion carries the figure directly, measured while it was
-    // being solved. Here it is ROLL rather than pitch that runs out, because
-    // what a hop meets on a steep site is a cross-slope: the sole cannot lie
-    // flat across the grade, the foot rests on one edge, and no amount of
-    // seating will change it. On the Copernicus wall that is 100 % of loaded
-    // frames with the ankle exactly on its 15 degree stop.
+    // A clip that measured its own ankle-roll saturation while being solved
+    // reports it directly. On a steep cross-slope it is ROLL rather than pitch
+    // that runs out: the sole cannot lie flat across the grade, the foot rests
+    // on one edge, and no seating pass will change it.
     const roll = s.clips?.A?.ik?.ankleRollSaturated;
     if (roll !== undefined) {
       if (roll < 0.15) return '';
@@ -1223,20 +1112,13 @@ export async function startArena(canvas, ui) {
   if (!index?.places?.length) {
     ui.querySelector('#panel').innerHTML =
       '<h1>Nothing built</h1><p class="blurb">Run <code>.venv/bin/python pipeline/dem.py site</code>, '
-      + 'then <code>node tools/build_all.mjs &amp;&amp; node tools/build_motions.mjs &amp;&amp; '
-      + 'node tools/build_index.mjs</code>.</p>';
+      + 'then <code>node tools/build_all.mjs &amp;&amp; node tools/build_index.mjs</code>.</p>';
     return arena;
   }
 
   const tabsEl = ui.querySelector('#tabs');
   const placesEl = ui.querySelector('#places');
   const motionsEl = ui.querySelector('#motions');
-  // Looked up here rather than beside the handler below, because applyMode()
-  // reads thrustWrap and is called while the mode toggle is being wired —
-  // which is before the handler's own declarations would have run.
-  const thrustWrap = ui.querySelector('#thrustwrap');
-  const thrustInput = ui.querySelector('#thrust');
-  const thrustVal = ui.querySelector('#thrustval');
 
   const bodies = index.bodies.filter((b) => index.places.some((p) => p.body === b));
   let body = bodies[0];
@@ -1248,24 +1130,17 @@ export async function startArena(canvas, ui) {
   /**
    * What can be played at this place.
    *
-   * A module offers the microgravity scenarios and nothing else — there is no
-   * ground, so there is no gait and a hop has no meaning. A surface place
-   * offers the packet comparison where a packet exists, plus every generated
-   * motion the build produced for it.
+   * One thing, everywhere: the two models, on that place's terrain. A module
+   * offers its two microgravity scenarios instead, because there is no ground
+   * there and therefore no gait to compare.
    */
   const motionsOf = (p) => {
     if (!p) return [];
     if (p.micro) return index.microScenes.map((m) => ({ id: m.id, label: m.name.split(' — ')[0], title: m.blurb }));
-    const out = [];
-    if (p.compare) {
-      out.push({ id: 'compare', label: 'A / B PACKETS',
-                 title: 'WorldVLA against PragyaSpace, both walking the same authored traverse.' });
-    }
-    for (const m of p.motions) {
-      out.push({ id: m, label: MOTION_LABEL[m] || m.toUpperCase(),
-                 title: MOTION_TITLE[m] || '' });
-    }
-    return out;
+    return p.compare
+      ? [{ id: 'compare', label: 'A / B',
+           title: 'WorldVLA against PragyaSpace, both walking the same authored traverse.' }]
+      : [];
   };
 
   const renderTabs = () => {
@@ -1327,13 +1202,11 @@ export async function startArena(canvas, ui) {
   const seam = ui.querySelector('#seam');
   const sepWrap = ui.querySelector('#sepwrap');
   const applyMode = () => {
-    // With a single generated motion there is no pair to separate or wipe
-    // between, so the controls that only mean something for a comparison are
-    // taken away rather than left to do nothing.
+    // With a single clip there is no pair to separate or wipe between, so the
+    // controls that only mean something for a comparison are taken away rather
+    // than left to do nothing.
     const pair = !!(arena.players.A && arena.players.B);
     modeBtn.style.display = pair ? '' : 'none';
-    // A packet clip is a recording; there is no thrust to turn up in it.
-    thrustWrap.style.display = arena.scene_?.generated ? '' : 'none';
     const lanes = arena.mode === 'lanes';
     modeBtn.textContent = lanes ? 'SIDE BY SIDE' : 'OVERLAY + WIPE';
     modeBtn.title = lanes
@@ -1353,36 +1226,6 @@ export async function startArena(canvas, ui) {
     arena._updateLanes();
   });
   applyMode();
-
-  /**
-   * THRUST, live.
-   *
-   * The slider re-solves the whole clip through src/sim/HopMotion.js — the
-   * same code that baked it — rather than scaling a canned animation, because
-   * what thrust changes is not the size of the motion but its whole structure:
-   * a harder push leaves faster, hangs longer, spends less of the cycle on the
-   * ground, and arrives with more attitude error than the ankle can take out.
-   * None of that is a multiplier on anything.
-   *
-   * Debounced to the next frame. Dragging fires input events far faster than a
-   * three-hundred-frame solve, and queueing them all would put the viewer
-   * seconds behind the slider.
-   */
-  let thrustPending = null, thrustBusy = false;
-  const applyThrust = async () => {
-    if (thrustBusy || thrustPending === null) return;
-    thrustBusy = true;
-    const want = thrustPending; thrustPending = null;
-    try { await arena.load(place, motion, want); } catch (e) { console.error(e); }
-    thrustBusy = false;
-    if (thrustPending !== null) applyThrust();
-  };
-  thrustInput.addEventListener('input', (e) => {
-    const v = Number(e.target.value);
-    thrustVal.textContent = `${v.toFixed(2)}×`;
-    thrustPending = v;
-    requestAnimationFrame(applyThrust);
-  });
 
   const play = ui.querySelector('#play');
   play.addEventListener('click', () => {

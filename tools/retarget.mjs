@@ -216,7 +216,11 @@ function gaitSchedule(n, speed, opt) {
   const out = {};
   for (const side of ['left', 'right']) {
     const off = side === 'left' ? 0 : 0.5;
-    const down = phase.map((p) => {
+    const down = phase.map((p, i) => {
+      // Airborne beats the schedule. The pelvis solve upstream has already
+      // decided the body is off the ground on these frames; a foot planted
+      // during one would be holding up a robot that is not there.
+      if (opt.flight?.[i]) return false;
       const u = (p + off) % 1;
       return u < duty;
     });
@@ -388,16 +392,62 @@ export function retarget(rows, field, opt) {
   // A floor as well: driven far enough down the hip passes over the foot and
   // the gait becomes a squat. Both ends are soft, so the authored bounce
   // keeps its shape and merely saturates.
-  const FLOOR = 0.46;
+  // A landing absorbs, and a landing from a hop absorbs further than any step
+  // in a walk does. 0.42 m puts the hip over a knee near 115 degrees — deep,
+  // and well inside what the joint allows. The soft knee below means the
+  // authored curve keeps its shape and merely saturates here, so a run that
+  // never crouches this far never notices the number.
+  const FLOOR = 0.42;
   const softMax = (v, c, k = 0.05) =>
     (v <= c - k ? v : c - k + k * Math.tanh((v - (c - k)) / k));
   const softMin = (v, f, k = 0.05) =>
     (v >= f + k ? v : f + k - k * Math.tanh(((f + k) - v) / k));
+  // WHEN THE AUTHORED BOUNCE EXCEEDS WHAT A PLANTED LEG CAN HOLD, THE ROBOT IS
+  // NOT STANDING — IT IS IN THE AIR.
+  //
+  // The soft ceiling above is right about the leg: past 0.775 m the hip cannot
+  // reach a foothold and the knee is on its singularity. It was wrong about
+  // what to do with the excess. Squashing it threw away the loudest signal in
+  // the packets — WorldVLA's peak pelvis bounce is 0.675 m on the Shackleton
+  // rim against PragyaSpace's 0.081, and both rendered at about 0.29 and 0.16
+  // because the clamp took the top off the tall one. On two sites the ORDER
+  // even inverted, and the stable model rendered bouncier than the unstable
+  // one.
+  //
+  // A leg that cannot hold the body that high is not a reason to lower the
+  // body. It is the definition of a flight phase: the excess push has taken
+  // the machine off the ground, which at one sixth g is exactly what
+  // "over-bounces" means. So the excess is kept, and the frames it covers are
+  // marked as airborne — which is then passed to gaitSchedule, so no foot is
+  // asked to be planted during them and the stance intervals split around them
+  // on their own.
+  const wantRaw = [];
+  for (let i = 0; i < n; i++) {
+    wantRaw.push((opt.rideHeight ?? DEFAULT_RIDE) + residual[i] + (opt.crouch ?? 0));
+  }
+  // A frame is airborne once the body is clear of the ceiling by more than the
+  // soft knee, so the two branches meet where the knee has already flattened
+  // and nothing steps.
+  const flight = wantRaw.map((w) => w > CEIL + 0.02);
+  // One-frame flickers are noise in the authored residual, not hops; and a
+  // one-frame gap between two hops is not a footfall. Close both.
+  for (let i = 1; i < n - 1; i++) if (flight[i - 1] && flight[i + 1]) flight[i] = true;
+  for (let i = 1; i < n - 1; i++) if (!flight[i - 1] && !flight[i + 1]) flight[i] = false;
+
   const pz = [];
   for (let i = 0; i < n; i++) {
-    const want = (opt.rideHeight ?? DEFAULT_RIDE) + residual[i] + (opt.crouch ?? 0);
-    pz.push(groundAt(px[i], py[i]) + softMin(softMax(want, CEIL), FLOOR));
+    const clamped = softMin(softMax(wantRaw[i], CEIL), FLOOR);
+    // Crossfade rather than switch: the soft knee has already bent the clamped
+    // curve away from the raw one by about a centimetre by the time the two
+    // branches meet, and a centimetre in one frame is 0.3 m/s of pelvis.
+    const w = smooth(clamp((wantRaw[i] - (CEIL - 0.06)) / 0.08, 0, 1));
+    pz.push(groundAt(px[i], py[i]) + lerp(clamped, wantRaw[i], w));
   }
+  // How far above the standing ceiling the body is, per frame. The swing arcs
+  // use it to bring the feet up WITH the body: a hop with the legs left
+  // dangling at full stretch is both wrong and unreachable for the IK.
+  const hopLift = wantRaw.map((w) => Math.max(0, w - CEIL) * 0.8);
+
   let smoothedPz = lowpass(pz, 5);   // the DEM's own metre-scale noise is not bounce
 
   // ---- root orientation --------------------------------------------------
@@ -420,9 +470,27 @@ export function retarget(rows, field, opt) {
   // 0.19 m of pure artefact — which is precisely what pushed the planted foot
   // 0.29 m across the midline and left 104 mm of position error.
   const BODY_LEN = 0.85, BODY_WID = 0.42;
-  // Limits a walking biped actually holds. Past these it is falling, not
-  // leaning, and the legs cannot reach the ground either way.
-  const MAX_BODY_PITCH = 0.30, MAX_BODY_ROLL = 0.16;
+  // TWO limits, because there are two things being added and only one of them
+  // is the terrain's.
+  //
+  // These used to be one clamp on the sum, at 0.30 pitch and 0.16 roll, and it
+  // was quietly the single biggest reason the two models looked alike. On
+  // ground with any relief the TERRAIN term reaches those limits on its own,
+  // so the sum saturated for both runs and whatever the packet had authored on
+  // top was discarded. Measured on the Shackleton rim: WorldVLA's packet
+  // records 22.9 deg of peak pitch and 12.1 of roll, PragyaSpace's records
+  // 12.5 and 0.8 — a fifteenfold difference in roll — and both rendered at
+  // exactly 17.2 and 9.2, which is to say at the clamp. The authored signal is
+  // the model's whole postural signature and it was being thrown away at the
+  // last step.
+  //
+  // So the terrain's contribution keeps the old ceiling, because that one is
+  // about the legs still reaching the ground, and the model's own contribution
+  // is allowed through to a wider bound that is about the machine rather than
+  // the walk. A run that authors itself nearly falling over should render
+  // nearly falling over; that is the thing being compared.
+  const MAX_TERRAIN_PITCH = 0.30, MAX_TERRAIN_ROLL = 0.16;
+  const MAX_BODY_PITCH = 0.45, MAX_BODY_ROLL = 0.28;
   const gpPitch = [], gpRoll = [];
   for (let i = 0; i < n; i++) {
     const gp = field.footPlane(px[i], -py[i], -yaw[i], BODY_LEN, BODY_WID);
@@ -431,18 +499,32 @@ export function retarget(rows, field, opt) {
   // A quarter second of smoothing on top: attitude is carried by the torso's
   // own mass and cannot step from frame to frame.
   const sPitch = lowpass(gpPitch, 9), sRoll = lowpass(gpRoll, 9);
-  const rootR = [];
+  // Held as angles rather than matrices, because the lurch a recorded slip
+  // produces is not known until the footholds are, and rebuilding from angles
+  // is exact where composing another rotation on top would not be.
+  const bodyPitch = [], bodyRoll = [];
   for (let i = 0; i < n; i++) {
     const m = quatToMat(rows[i][3], rows[i][4], rows[i][5], rows[i][6]);
     // authored pitch/roll about the authored heading
     const aPitch = Math.asin(clamp(-m[6], -1, 1));
     const aRoll = Math.atan2(m[7], m[8]);
     const lean = opt.terrainLean ?? 0.5;
-    rootR.push(rpyMat(
-      clamp(aRoll + sRoll[i] * lean, -MAX_BODY_ROLL, MAX_BODY_ROLL),
-      clamp(aPitch + sPitch[i] * lean, -MAX_BODY_PITCH, MAX_BODY_PITCH),
-      yaw[i]));
+    const tRoll = clamp(sRoll[i] * lean, -MAX_TERRAIN_ROLL, MAX_TERRAIN_ROLL);
+    const tPitch = clamp(sPitch[i] * lean, -MAX_TERRAIN_PITCH, MAX_TERRAIN_PITCH);
+    bodyRoll.push(aRoll + tRoll);
+    bodyPitch.push(aPitch + tPitch);
   }
+  const rootR = [];
+  const composeRoot = () => {
+    rootR.length = 0;
+    for (let i = 0; i < n; i++) {
+      rootR.push(rpyMat(
+        clamp(bodyRoll[i], -MAX_BODY_ROLL, MAX_BODY_ROLL),
+        clamp(bodyPitch[i], -MAX_BODY_PITCH, MAX_BODY_PITCH),
+        yaw[i]));
+    }
+  };
+  composeRoot();
 
   // ---- footholds ---------------------------------------------------------
   // Forward speed along the placed path, used to modulate cadence.
@@ -471,7 +553,7 @@ export function retarget(rows, field, opt) {
   const maxHalfStride = Math.sqrt(Math.max(0.0025, horiz2)) * 0.85;
 
   const sched = gaitSchedule(n, speed, { ...opt, refSpeed: meanSpeed,
-                                         meanSpeed, maxHalfStride });
+                                         meanSpeed, maxHalfStride, flight });
   const footholds = { left: [], right: [] };
 
   // Swing clearance, bounded by the time there is to achieve it.
@@ -606,6 +688,98 @@ export function retarget(rows, field, opt) {
     }
   }
 
+  // ---- WHAT A RECORDED SLIP DOES TO THE BODY ----------------------------
+  //
+  // The manifest says how many recovery events a clip contains, and the loop
+  // above renders each as a foot that lands, loses traction and slides. That
+  // is the cause; this is the effect, and without it the most legible thing a
+  // packet records was happening entirely below the ankle. A viewer cannot see
+  // a 0.11 m slip. They can see the body lurch.
+  //
+  // Nothing here is invented. A foot that slides `d` under a centre of mass at
+  // height L tips the body by atan(d/L) — pure geometry. What the machine can
+  // do about it is the interesting half, and it is the same limit the jumping
+  // model runs into: the usable ankle torque is not the actuator's rating, it
+  // is whatever keeps the centre of pressure inside the sole,
+  //
+  //     tau_max = m * g * d_foot,     alpha = tau_max / I_body
+  //
+  // which is GRAVITATIONAL. Over one stance the ankle can take out
+  // alpha*t^2/4, so the residual lurch is whatever the slip put in beyond
+  // that, and it decays at a rate set by the same alpha. On Mars a 0.11 m slip
+  // is arrested inside the stance it happens in and the body barely moves; on
+  // the Moon the ankle has one sixth the authority, cannot finish the job, and
+  // the lurch is still visible two footfalls later. That is the difference the
+  // Apollo film shows, and it comes out of `g` rather than being dialled in.
+  {
+    const I_BODY = 3.624, MASS = 35.12, D_FOOT = 0.085;
+    const L = opt.comHeight ?? 0.62;
+    const g = Math.max(opt.g ?? 9.807, 1e-3);
+    const alpha = (MASS * g * D_FOOT) / I_BODY;
+    const tStance = Math.max(0.2, (sched.baseT ?? 0.8) * (sched.duty ?? 0.6));
+
+    // The ankle does not get to act until the foot stops moving.
+    //
+    // Crediting it with m*g*d_foot for the whole stance made every slip come
+    // out fully absorbed and nothing moved — which cannot be right, because a
+    // packet that records a RECOVERY EVENT is recording a disturbance the
+    // model did not absorb quietly. While the sole is sliding there is no
+    // centre of pressure to move around: the tangential force is whatever
+    // friction gives and none of it is available as a restoring moment. So the
+    // body takes the full geometric tip, and the correction starts afterwards.
+    //
+    // Which leaves the recovery TIME as the thing gravity sets. Removing an
+    // angle at acceleration alpha takes 2*sqrt(theta/alpha), and alpha goes as
+    // g — so recovery time goes as 1/sqrt(g): 0.30 s on Earth, 0.48 on Mars,
+    // 0.72 on the Moon for the same stumble. The lurch is the same size
+    // everywhere and the Moon simply wears it for twice as long, which is
+    // exactly how it looks in the film.
+    for (const side of ['left', 'right']) {
+      for (const f of footholds[side]) {
+        if (!f.slip) continue;
+        const d = Math.hypot(f.slip.dx, f.slip.dy);
+        const tip = Math.atan2(d, L);
+        const resid = tip;
+        if (resid <= 2e-3) continue;
+        // Three time constants to work it off, so 3*tau is the settling time.
+        const tau = clamp((2 * Math.sqrt(tip / alpha)) / 3, 0.12, 1.6);
+        // The slip runs down the fall line; the body goes with it, so the tip
+        // decomposes onto pitch and roll through the heading.
+        const rel = Math.atan2(f.slip.dy, f.slip.dx) - f.yaw;
+        for (let i = f.a; i < n; i++) {
+          const t = (i - f.a) / FPS;
+          // Rise over four frames — a slip is quick but not instantaneous —
+          // then decay. Anything below a tenth of a degree is not visible and
+          // not worth carrying to the end of the clip.
+          const e = resid * Math.exp(-t / tau) * smooth(clamp(t / 0.13, 0, 1));
+          if (t > 0.13 && e < 2e-3) break;
+          bodyPitch[i] -= e * Math.cos(rel);
+          bodyRoll[i] += e * Math.sin(rel);
+        }
+      }
+      // A MISSED CONTACT is the other recorded failure: the foot arrives high
+      // and drops late onto the surface. The body is briefly unsupported on
+      // that side, so it falls through the gap and is caught — a shorter,
+      // sharper version of the same thing, pitched forward because that is the
+      // way an unsupported swing leg lets a walking body go.
+      for (const f of footholds[side]) {
+        if (!f.missed) continue;
+        const drop = 0.045;                     // the height the foot arrives at
+        const tip = Math.atan2(drop, L);
+        const tau = clamp((2 * Math.sqrt(tip / alpha)) / 3, 0.10, 1.2);
+        const sgn = side === 'left' ? 1 : -1;
+        for (let i = f.a; i < n; i++) {
+          const t = (i - f.a) / FPS;
+          const e = tip * Math.exp(-t / tau) * smooth(clamp(t / 0.08, 0, 1));
+          if (t > 0.08 && e < 2e-3) break;
+          bodyPitch[i] += e;
+          bodyRoll[i] += e * 0.6 * sgn;
+        }
+      }
+    }
+    composeRoot();
+  }
+
   // ---- per-frame foot targets -------------------------------------------
   const footTarget = { left: [], right: [] };
   for (const side of ['left', 'right']) {
@@ -722,7 +896,12 @@ export function retarget(rows, field, opt) {
           const RAMP = 0.15;
           const blend = smooth(Math.min(1, u / RAMP)) * smooth(Math.min(1, (1 - u) / RAMP));
           const floor = base + Math.max(0, along + 0.035 - base) * blend;
-          const z = Math.max(base + arc, floor + (arc * 0.55 + 0.012) * blend);
+          // Bring the foot up with the body through a hop. Without this the
+          // swing target stays near the ground while the pelvis is a fifth of a
+          // metre above its own ceiling, so the leg is asked for a reach it does
+          // not have: the IK saturates, the knee locks straight and the machine
+          // hops with its legs hanging. Real bodies tuck.
+          const z = Math.max(base + arc, floor + (arc * 0.55 + 0.012) * blend) + hopLift[i];
           // toe up on the way out, level on the way in, so the heel strikes first
           const pitch = lerp(prev.pitch, nxt.pitch, w) + Math.sin(u * Math.PI) * -0.10 + (1 - u) * 0.0;
           tgt = { x, y, z, pitch, roll: lerp(prev.roll, nxt.roll, w),
@@ -771,12 +950,28 @@ export function retarget(rows, field, opt) {
         ceil[i] = Math.min(ceil[i], t.z + vertical + HIP_DROP);
       }
     }
-    // Where nothing is loaded — a flight phase — carry the neighbouring
-    // ceiling forward rather than letting the pelvis jump.
+    // Where a foot is merely between footholds, carry the neighbouring ceiling
+    // forward rather than letting the pelvis jump.
+    //
+    // But NOT through a real flight phase. This whole pass exists to ask how
+    // high the hip can be and still reach the foothold it is standing on, and
+    // a body in the air is not standing on anything — no leg constrains it and
+    // the only thing that decides its height is the arc it left the ground on.
+    // Carrying the stance ceiling across a hop pinned the pelvis to walking
+    // height for the entire time it was supposed to be airborne, which is the
+    // second half of why WorldVLA's 0.76 m of authored bounce was rendering as
+    // 0.37: the clamp took the top off, and this took the rest.
+    const held = (i) => !flight[i];
     let last = Infinity;
-    for (let i = 0; i < n; i++) { if (isFinite(ceil[i])) last = ceil[i]; else ceil[i] = last; }
+    for (let i = 0; i < n; i++) {
+      if (isFinite(ceil[i])) last = ceil[i];
+      else if (held(i)) ceil[i] = last;
+    }
     last = Infinity;
-    for (let i = n - 1; i >= 0; i--) { if (isFinite(ceil[i])) last = ceil[i]; else ceil[i] = last; }
+    for (let i = n - 1; i >= 0; i--) {
+      if (isFinite(ceil[i])) last = ceil[i];
+      else if (held(i) && !isFinite(ceil[i])) ceil[i] = last;
+    }
 
     // Come down BEFORE the foot lands, not when it lands.
     //
@@ -795,6 +990,14 @@ export function retarget(rows, field, opt) {
     const W = Math.round(FPS * 0.32);
     const eroded = new Array(n);
     for (let i = 0; i < n; i++) {
+      // Airborne frames are not eroded at all. Coming down before the foot
+      // lands is a WALKING behaviour — it is how a leg reaches for the next
+      // foothold — and applied to a hop it does the opposite of what it is
+      // for: the running minimum reaches a third of a second either side, so
+      // every airborne frame within ten frames of a footfall was pulled back
+      // to walking height. That is the last of the three things flattening
+      // WorldVLA's bounce, and the one that survived the other two fixes.
+      if (flight[i]) { eroded[i] = Infinity; continue; }
       let m = Infinity;
       for (let k = Math.max(0, i - W); k <= Math.min(n - 1, i + W); k++) {
         m = Math.min(m, ceil[k]);
@@ -806,7 +1009,14 @@ export function retarget(rows, field, opt) {
     }
     // Smoothed over about a fifth of a second: the torso has mass and the
     // ceiling itself steps whenever a foot is set down.
-    smoothedPz = lowpass(pz, 7);
+    //
+    // Except in flight, where there is nothing to smooth. A ballistic arc is
+    // already as smooth as a trajectory gets, and a half-second boxcar run
+    // across one does only one thing: take the top off the hop. So the arc is
+    // kept as solved and a light two-frame pass over the whole thing removes
+    // the seam where the two meet.
+    const sm = lowpass(pz, 7);
+    smoothedPz = lowpass(pz.map((v, i) => (flight[i] ? v : sm[i])), 2);
   }
 
   // ---- solve ------------------------------------------------------------

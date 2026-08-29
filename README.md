@@ -30,7 +30,7 @@ node tools/check_contact.mjs   http://localhost:4199   # nothing inside the grou
 node tools/check_sites.mjs                             # the two catalogues agree
 ```
 
-## The arena: three bodies, forty places, four motions
+## The arena: three bodies, forty places, one comparison
 
 `/arena.html` is a three-level picker, because the question has three parts.
 **Which body** decides the gravity, **which place** decides the ground, and
@@ -38,8 +38,8 @@ node tools/check_sites.mjs                             # the two catalogues agre
 
 | | places | terrain | motions available |
 |---|---|---|---|
-| **Moon** | 16 | LOLA / LOLA+Kaguya, 5–60 m/px | A/B packets on six of them, plus lope, bound and trip everywhere |
-| **Mars** | 16 | HiRISE Gale at 1 m/px, HRSC+MOLA elsewhere | as above |
+| **Moon** | 16 | LOLA / LOLA+Kaguya, 5–60 m/px | the A/B pair, on every one |
+| **Mars** | 16 | HiRISE Gale at 1 m/px, HRSC+MOLA elsewhere | the A/B pair, on every one |
 | **ISS** | 8 modules | none — the place is a pressurised volume | the two microgravity scenarios |
 
 The Moon and Mars lists carry the Apollo sites, the rover landing sites, the
@@ -48,220 +48,109 @@ came from. Every one is a real window of published NASA/USGS topography,
 fetched by `pipeline/dem.py` and labelled with how much of it was actually
 measured.
 
-## Bounding, loping, and falling over
+## Making WorldVLA look as bad as its own data says it is
 
-The complaint this answers is a fair one: for all the gravity in the physics,
-the arena looked much the same on the Moon as on Mars. Every motion in it was a
-**walk**, and a walk is the worst possible way to show what gravity does,
-because a walking robot keeps a foot on the ground almost all the time and
-gravity only gets the small fraction of the cycle that is flight. Watch the
-Apollo film and the crews are not walking: they lope, they bound, they hang,
-and they fall over.
+The A/B pair is the whole arena, and for a long time the two runs looked much
+the same. The packets did not: WorldVLA's manifests record 0.44-0.675 m of peak
+pelvis bounce against PragyaSpace's 0.055-0.081, 22.9 degrees of peak pitch
+against 12.5, 12.1 of roll against 0.8, and three or four recovery events and
+one or two missed contacts against **none at all, on every site**. That
+contrast was in the data the whole time and was being destroyed on the way to
+the screen, by three separate things.
 
-`src/sim/Ballistic.js` generates three motions from the field strength and the
-URDF, and `tools/build_motions.mjs` solves them against the real terrain.
-Nothing about them is authored — given `g`, everything below follows.
+### One clamp on the sum erased a fifteenfold difference
 
-### Thrust is the input, and gravity is in the answer twice
+Body attitude was `clamp(authored + terrain*lean, ±0.30, ±0.16)` — one limit on
+the total. On ground with any relief the TERRAIN term reaches those limits by
+itself, so the sum saturated for both runs and everything the packet had
+authored on top was discarded. Measured on the Shackleton rim, WorldVLA's 22.9°
+pitch and 12.1° roll and PragyaSpace's 12.5° and 0.8° both rendered at exactly
+17.2° and 9.2°: identical, at the clamp.
 
-Two knees at `thrust` times the URDF's own `effort="139"` N·m produce a
-vertical force through the leg's Jacobian, and what the robot gets out of it is
-the NET acceleration:
+They are now two limits. The terrain's contribution keeps the old ceiling,
+because that one is about the legs still reaching the ground. The model's own
+contribution is allowed through to a wider bound that is about the machine.
 
-```
-a = F/m − g
-```
+### Bounce that a leg cannot hold is not bounce, it is flight
 
-Subtracting `g` is where gravity enters, and it enters **twice**. On the Moon
-the same thrust has five sixths less weight to fight, so the machine
-accelerates harder and leaves faster; and the slower field then turns that
-faster take-off into a much higher apex. The two compound, through
-`apex = v0²/2g` with `v0` itself rising as `g` falls:
+The soft ceiling at 0.775 m is right about the leg — past it the hip cannot
+reach a foothold and the knee is on its singularity — and wrong about what to
+do with the excess. Squashing it took the top off the loudest signal in the
+packets, and on two sites the ORDER even inverted, so the stable model rendered
+bouncier than the unstable one.
 
-| | take-off | apex | hang | on the ground |
-|---|---|---|---|---|
-| Earth | 2.54 m/s | 0.33 m | 0.52 s | 51 % |
-| Mars | 2.64 m/s | 0.94 m | 1.42 s | 22 % |
-| **Moon** | **2.68 m/s** | **2.20 m** | **3.29 s** | **11 %** |
+A leg that cannot hold the body that high is not a reason to lower the body. It
+is the definition of a flight phase, and at one sixth g it is exactly what
+"over-bounces" means. The excess is now kept and those frames are marked
+airborne, which is handed to `gaitSchedule` so no foot is asked to be planted
+during them and the stance intervals split around them on their own.
 
-Same push. A G1 is 1.32 m tall, so on the Moon it clears two thirds again its
-own height and is on the ground for one ninth of the cycle. Turn the thrust to
-2× and the lunar apex goes to **2.97 m**.
+Two more things were flattening it after that, and both were walking
+behaviours applied to a hop:
 
-The speed ceiling is still enforced and still real — the leg extends by
-`|dL/dknee|` metres per radian, which goes to **zero** as the leg straightens,
-so the robot can never move faster than its knee can extend (`velocity="20"`
-rad/s). What that ceiling does under high thrust is interesting rather than
-limiting: the energy curve meets it earlier, at a more folded knee where the
-ceiling is higher, so the machine takes off *before* the leg is straight. Which
-is what a real jumper does, and what a purely kinematic model of leg extension
-cannot reproduce, since that model has the extension rate falling to zero
-exactly when the robot is supposed to be fastest.
+- The pelvis reach ceiling — how high the hip can be and still reach the
+  foothold it stands on — was carried across flight phases. A body in the air
+  is not standing on anything.
+- The "come down before the foot lands" erosion runs a minimum over a third of
+  a second either side, so every airborne frame within ten frames of a footfall
+  was pulled back to walking height.
 
-### Why thrust destabilises it, and why that gets worse as gravity falls
+| Shackleton rim | recorded | before | after |
+|---|---|---|---|
+| WorldVLA bounce | 675 mm | 291 mm | **726 mm** |
+| PragyaSpace bounce | 81 mm | 163 mm | **162 mm** |
+| WorldVLA airborne | — | 0 % | **32 % of the clip** |
 
-A bigger push in a weaker field goes higher. It says nothing about whether the
-machine is still upright when it lands — and that is the question the Apollo
-film actually answers, because the crews fell over constantly and not because
-they were clumsy.
+Shiv Shakti goes the same way: 440 mm recorded, 194 rendered before, **458
+after**, against PragyaSpace's 58.
 
-Three quantities, and gravity is in all of them.
+### What a recorded slip does to the body
 
-**What the push does to attitude.** No push is perfectly through the centre of
-mass: the two legs never produce identical force and the body is never exactly
-upright at the moment it leaves. Four millimetres of offset on a 1.32 m machine
-is an ordinary misalignment. It applies a torque `F·e` for the duration of the
-push, and that angular impulse over the body's own pitch inertia gives a rate
-which **barely depends on g at all** — it is set by the machine.
+The manifest says how many recovery events a clip contains and the retargeter
+already rendered each as a foot that lands, loses traction and slides. That is
+the cause; the effect was missing, so the most legible thing a packet records
+was happening entirely below the ankle. Nobody can see a 0.11 m slip. Everybody
+can see the body lurch.
 
-**What flight does with it.** In free flight there is no external torque, so
-that rate is conserved and simply integrates over `t_flight = 2v0/g`. Gravity
-enters as 1/g: the same 4 mm that tips the body 13° on Earth tips it **79° on
-the Moon**.
-
-**What the robot can do about it** — and here the two remedies pull opposite
-ways.
-
-- In the air, the **arms**. Angular momentum is conserved, so the only way to
-  rotate the torso is to rotate something else the other way. Both arms are
-  **13.8 %** of the body's pitch inertia — summed from `G1_TREE`'s own link
-  inertia tensors with the parallel-axis theorem — so a sweep buys back that
-  fraction of itself, and a stroke out with the elbow extended against a return
-  with it tucked nets most of it rather than cancelling. A longer flight allows
-  more strokes, so this authority *grows* as gravity falls. It is exactly the
-  Apollo windmilling, and it is why the arms in these clips are driven by how
-  much correction is still owed rather than by a walk cycle.
-- On the ground, the **ankle** — and this is the trap. The usable ankle torque
-  is not the actuator's 139 N·m; it is whatever keeps the centre of pressure
-  inside the sole:
+Nothing about it is invented. A foot sliding `d` under a centre of mass at
+height `L` tips the body by `atan(d/L)` — pure geometry. What the machine can do
+about it is the interesting half, and it is the same limit the jump model runs
+into: usable ankle torque is not the actuator's rating, it is whatever keeps the
+centre of pressure inside the sole,
 
 ```
 τ_max = m · g · d_foot
 ```
 
-That is a **gravitational** limit, not a mechanical one. At one sixth g the
-robot has one sixth the authority to correct its attitude however strong its
-motors are, because leaning on the ankle harder just tips the foot off its own
-edge. On the Moon it is **4.9 N·m**.
+which is **gravitational**. And while the sole is still sliding there is no
+centre of pressure to move around at all, so the body takes the full tip and the
+correction only starts once the foot catches. That leaves the recovery TIME as
+the thing gravity sets: removing an angle at acceleration `α` takes
+`2√(θ/α)`, and `α` goes as `g`, so recovery time goes as **1/√g** — 0.30 s on
+Earth, 0.48 on Mars, **0.72 on the Moon** for the same stumble. The lurch is the
+same size everywhere and the Moon simply wears it for twice as long, which is
+how it looks in the film.
 
-So the error to absorb grows as 1/g while the authority to absorb it falls as
-g, and the instability index
+### Where it landed
 
-```
-S = (tumble in flight − what the arms took back) / (what the stance can correct)
-```
+Slip while loaded, which is the number that says whether a foot is doing its
+job, now separates the two everywhere: 21.7 % against 8.2 % on Shackleton,
+28.9 % against 3.5 % on Gale, 25.6 % against 3.0 % on Ganges. Sole penetration
+is unchanged at −4.0 to −5.4 mm on all 68 clips, and `check_contact.mjs` still
+measures **0.0 mm** of any robot inside the ground across all 34 scenes.
 
-goes as roughly **1/g²**:
+### Every place carries the pair
 
-| thrust | | tips in flight | arms recover | ankle can fix | **S** | |
-|---|---|---|---|---|---|---|
-| 1× | Earth | 13° | 14° | 19° | **0.0** | holds |
-| 1× | Mars | 35° | 23° | 7° | **1.8** | staggers |
-| 1× | **Moon** | 79° | 52° | 3° | **9.3** | goes over |
-| 2× | **Moon** | 158° | 61° | 2° | **45.8** | goes over |
+A packet is a motion, not a location — `retarget.mjs` re-solves every foothold
+against whatever `SiteField` it is handed, which is the whole reason twelve
+clips could be planted on twelve sites in the first place. So the twenty places
+that had no packet of their own now borrow the one whose PROBLEM their terrain
+poses, chosen from the patch's own measured grade and the direction the
+scenario walks. Thirty-two surface places, one comparison, no exceptions.
 
-`S < 1` means the stance can absorb what the flight built up. `S > 1` means it
-cannot, and the robot lands already committed to falling — which is what the
-generated motions then do, because attitude in `HopMotion.js` is **integrated
-across the whole clip** rather than posed per frame. A robot that starts every
-hop upright can never fall over, however unstable the physics says it is.
-
-The absolute numbers are linear in that 4 mm; the **ratio** between the bodies
-is not, and the ratio is the finding.
-
-### Thrust is live
-
-The slider re-solves the entire clip through `src/sim/HopMotion.js` — the same
-code that baked it — in about 470 ms, rather than scaling a canned animation.
-It has to: what thrust changes is not the size of the motion but its whole
-structure. A harder push leaves faster, hangs longer, spends less of the cycle
-on the ground, and arrives with more attitude error than the ankle can take
-out. None of that is a multiplier on anything.
-
-### Three things a generated hop got wrong before it got them right
-
-Each was found by measuring the clip rather than looking at it, and each shows
-up as a joint rate no hardware could follow.
-
-**The swing parameter restarted three times per stride.** A hop has three
-phases — crouch, flight, absorb — and in a lope the trailing foot is off the
-ground for all of them. Driven by the phase-local parameter it travelled from
-one foothold to the next during the crouch, snapped back at take-off and did it
-again: **3787 deg/s at the hip**, all of it at phase boundaries. A foot in the
-air for the whole hop needs a parameter that spans the whole hop.
-
-**The arc landed at the height it took off from.** The ballistic term was
-measured from the take-off foothold, but the landing footholds are a stride
-further along and on a slope that is somewhere else — so the pelvis teleported
-at the touchdown frame, **191 mm on Malapert Massif, 203 on Hadley**, which is
-six metres per second in a single frame. The arc now rides a baseline running
-from one support height to the other; apex and hang are untouched, and at the
-end of flight the ballistic term is exactly zero, so the body arrives at
-standing height over the new footholds with nothing left to jump.
-
-**Seating the foot per frame put a step in the target.** Correcting for what
-the ankle could not conform to is right, but done per frame it switches on at
-the instant a foot becomes loaded. The foothold is seated once, at plan time,
-so the swing arc ends exactly where the stance begins.
-
-**And you cannot squat as deep on a hill.** Absorbing a landing folds the leg
-over a planted foot, which is dorsiflexion — but on a grade the ankle has
-already spent part of its range getting the sole onto the slope. Asking for the
-full crouch anyway does not produce a deeper crouch, it produces an ankle on its
-stop with the heel driven into the hill. The absorb is now bounded by the range
-actually left, which took the Copernicus wall from 64 mm to 25.
-
-### Where the hardware, not the solver, runs out
-
-A generated motion is solved against the terrain the same way a packet is, and
-it is seated on its own contact spheres afterwards for the same reason: the
-foothold is planned under a level sole, the ankle then clamps to its URDF
-limits, and a foot that cannot conform tips onto an edge and sits *higher*.
-Adding that pass took the steep lunar sites from 69.5 mm of sole into the hill
-on Malapert Massif to 0.0 mm.
-
-It does not fix everything, and it should not. On the **Copernicus** terraced
-wall a two-foot bound lands with `ankle_roll` at exactly its -0.2618 rad stop
-and the knee fully extended, on **100 % of loaded frames**, with 22.8 mm of
-sole in the hill. The cross-slope is simply steeper than the 15 degrees the G1's
-ankle can conform to, so no seating pass can put the sole flat. Gale Crater, on
-the same solver, saturates on 0 %.
-
-That number is measured and reported rather than iterated away — it is the same
-limit that makes people traverse a steep face instead of attacking it square
-on, and the arena says so in the panel when it happens.
-
-### Low gravity makes you SLOW
-
-The result people find hardest to believe, and the reason the Apollo crews
-loped rather than ran. Forward acceleration comes from friction, and friction
-comes from weight:
-
-```
-v_max <= mu * g * t_stance
-```
-
-`t_stance` is a property of the machine and does not change, so the speed
-ceiling falls with `g` directly: **2.80 m/s on Earth, 0.73 on Mars, 0.26 on the
-Moon.** One sixth gravity does not make you fast. It hands you a three-second
-flight phase and almost nothing to push with.
-
-Note how nearly it cancels. Range is `v_max × t_flight`, and `v_max` goes as
-`g` while `t_flight` goes as `1/g`, so the stride barely moves at all — 1.45 m
-on Earth, 1.04 on Mars, 0.87 on the Moon — despite the Moon's hop being nearly
-seven times as tall. It is the same structural cancellation the walking page
-runs into with stride at fixed Froude number: the Moon buys you height and
-hang, and charges you the speed to use them.
-
-### Falling over is slow, and that is the whole point
-
-Toppling is an inverted pendulum about the planted toe, so the time to go over
-scales as `1/sqrt(g)`: **0.93 s on Earth against 2.28 s on the Moon.** The
-interesting part of a low-gravity fall is not that it looks slow, it is that it
-buys over a second of extra warning — which is what the crews used to get a
-hand or a foot down, and why they fell so gracefully when they could not. The
-`TRIP + RECOVER` motion catches a toe on the terrain and drives the pitch on
-that clock rather than on the clip's.
+The generated lope/bound/trip motions that briefly lived here have been
+removed: the arena is the A/B pair. `src/sim/Ballistic.js` stays, because the
+ankle-authority result above is what makes the lurch scale with gravity.
 
 ## Arm Studio: your arms, on the robot's arms
 
@@ -446,8 +335,7 @@ Nothing in that data responds to gravity.
 | Ground-bounce IBL | `src/render/IBL.js` |
 | Terrain + crater stamping | `src/render/Terrain.js` |
 | Gravity-conditioned gait | `src/sim/Gait.js` |
-| Thrust, flight and instability | `src/sim/Ballistic.js` |
-| The hop/lope/trip generator, shared | `src/sim/HopMotion.js` |
+| Thrust, flight and ankle authority | `src/sim/Ballistic.js` |
 | Webcam pose to G1 arm joints | `src/sim/ArmRetarget.js` |
 | Arm Studio | `src/ui/ArmStudio.js`, `arms.html` |
 | Ground under two side-by-side runs | `src/terrain/LaneField.js` |
@@ -488,14 +376,14 @@ H1 is **legs-only** — 10 movable joints, arm links welded. Indexing by positio
 put the knee value into H1's hip yaw. Every joint is now addressed by name, and
 `arms: null` on the H1 states the absence rather than silently no-op'ing.
 
-## The fourteen packet scenes
+## The twelve authored scenes
 
-The A/B comparison, which is a different thing from the forty places. Six lunar
-motion problems, six Martian, two in microgravity — each a different problem,
-not the same walk on different ground. Every one plays on a real NASA/USGS
-terrain window and carries both models: **A = WorldVLA**, **B = PragyaSpace**.
-The other twenty-six places have no packet, and offer the generated motions
-instead.
+Six lunar motion problems, six Martian, two in microgravity — each a different
+problem, not the same walk on different ground, and each with its posture and
+blurb written for the site. Every one plays on a real NASA/USGS terrain window
+and carries both models: **A = WorldVLA**, **B = PragyaSpace**. The other twenty
+places borrow whichever of these packets their own terrain calls for; see
+*Every place carries the pair* above.
 
 ```bash
 .venv/bin/python pipeline/dem.py site          # fetch all 32 terrain windows

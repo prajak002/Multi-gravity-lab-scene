@@ -283,3 +283,75 @@ export const SCENES = {
     clipB: { stroke: 'glide' },
   },
 };
+
+// ---------------------------------------------------------------------------
+// EVERY PLACE GETS THE A/B COMPARISON
+//
+// Twelve of the forty places were authored by hand above, each around a
+// specific motion problem. The other twenty-eight are real terrain with no
+// packet of their own — and a place you cannot put the two models on is not
+// much of a place.
+//
+// A packet is a motion, not a location: tools/retarget.mjs re-solves every
+// foothold against whatever SiteField it is handed, which is the whole reason
+// the same twelve clips can be planted on twelve different sites in the first
+// place. So each remaining site borrows the packet whose PROBLEM its terrain
+// actually poses, chosen from the patch's own measured grade and the direction
+// the scenario walks — not at random, and not always the same one.
+//
+// The hand-authored entries above win wherever they exist; this only fills.
+// ---------------------------------------------------------------------------
+import fs from 'fs';
+import { SITES as PLACES } from './sites.mjs';
+
+/** The packet whose motion problem this terrain poses. */
+function packetFor(body, grade, traverse) {
+  const moon = body === 'Moon';
+  if (traverse === 'downslope' && grade > 6) {
+    return moon
+      ? { packet: 'packets/moon/PragyaSpace_TychoFlank_v1', profileHint: 'moon_slope', heading: 'downslope' }
+      : { packet: 'packets/mars/PragyaSpace_GangesChasma_v1', profileHint: 'mars_talus', heading: 'downslope' };
+  }
+  if (grade > 9) {
+    return moon
+      ? { packet: 'packets/moon/PragyaSpace_ShackletonRim_v1', profileHint: 'moon_blocky', heading: 'upslope' }
+      : { packet: 'packets/mars/PragyaSpace_GaleCrater_v1', profileHint: 'mars_rocky', heading: 'upslope' };
+  }
+  if (grade > 3) {
+    return moon
+      ? { packet: 'packets/moon/PragyaSpace_ShivShakti_v2', profileHint: 'moon_regolith', heading: 'upslope' }
+      : { packet: 'packets/mars/PragyaSpace_JezeroDelta_v1', profileHint: 'mars_delta', heading: 0 };
+  }
+  return moon
+    ? { packet: 'packets/moon/PragyaSpace_MareTranquillitatis_v1', profileHint: 'moon_mare', heading: 0 }
+    : { packet: 'packets/mars/PragyaSpace_OlympiaUndae_v1', profileHint: 'mars_sand', heading: 0 };
+}
+
+let seed = 7001;
+for (const [id, site] of Object.entries(PLACES)) {
+  if (SCENES[id] || site.micro || !site.dem) continue;
+  let grade = 3, traverse = 'contour';
+  try {
+    const meta = JSON.parse(fs.readFileSync(`public/dem/${site.dem}.json`, 'utf8'));
+    grade = meta.stats?.plane_slope ?? 3;
+    // The bearing the patch was turned onto tells us what the scenario wanted.
+    traverse = meta.grid_bearing_deg !== undefined ? (site.traverse ?? 'contour') : 'contour';
+  } catch { /* not fetched: the index will drop it anyway */ }
+  const pick = packetFor(site.body, grade, traverse);
+  SCENES[id] = {
+    name: site.name,
+    body: site.body,
+    g: site.g,
+    packet: pick.packet,
+    dem: site.dem,
+    // The site's own surface profile wins: it describes the ground, and the
+    // packet only supplies the motion.
+    profile: site.profile ?? pick.profileHint,
+    origin: site.origin ?? [-4, 0],
+    heading: pick.heading,
+    seed: (seed += 97),
+    blurb: site.blurb,
+    styleA: { ...A },
+    styleB: { ...B },
+  };
+}
