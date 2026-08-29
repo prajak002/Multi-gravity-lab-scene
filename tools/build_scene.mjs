@@ -146,7 +146,13 @@ export function buildScene(id) {
   return { out, report };
 }
 
-if (process.argv[2]) {
+// Only when run as the command, never when imported.
+//
+// build_motions.mjs imports JOINT_NAMES from here, and without this guard that
+// import ALSO ran this block against build_motions' own argv — so asking for
+// twenty generated motions tried to build a packet scene named after all
+// twenty at once.
+if (process.argv[1]?.endsWith('build_scene.mjs') && process.argv[2]) {
   const { out, report } = buildScene(process.argv[2]);
   if (out.micro) {
     console.log(`\n${out.name}   (${out.body}, microgravity)`);

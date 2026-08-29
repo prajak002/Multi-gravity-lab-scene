@@ -141,8 +141,15 @@ SITES = {
         name="Jezero Crater western delta",
         note="Obstacle slalom across the delta front."),
     "mars_gale_crater": dict(
-        source="gale_1m", lat=-4.74723, lon=137.3785, want_slope=9.0, traverse="upslope", search_km=0.4,
+        source="gale_1m", lat=-4.74723, lon=137.3785, want_slope=5.5, traverse="upslope", search_km=2.0,
         name="Gale Crater — lower Mount Sharp flank",
+        # The grade wanted here came down from 9 degrees when the patch grew
+        # from a 128 m square to 1200 m. Slope is scale-dependent: 9 degrees
+        # measured over 128 m of the Mount Sharp flank is a walkable rise, and
+        # the same figure over 1200 m is a window whose local relief put the
+        # WorldVLA clip's sole 31 mm into the hill with a third of its stance
+        # sliding. The search radius grew with it, because a 2 km neighbourhood
+        # of a 1200 m patch is the same amount of choice 0.4 km gave a 128 m one.
         note="Rocky uphill traction. 1 m/px HiRISE, the finest Mars DEM there is."),
     "mars_olympia_undae": dict(
         source="hrsc_mola_200m", lat=81.0, lon=180.0, want_slope=1.2, traverse="contour", search_km=30,

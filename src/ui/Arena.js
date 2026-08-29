@@ -1072,6 +1072,23 @@ export class Arena {
    * sensible route zig-zags rather than going straight up.
    */
   _hardwareNote(s) {
+    // A generated motion carries the figure directly, measured while it was
+    // being solved. Here it is ROLL rather than pitch that runs out, because
+    // what a hop meets on a steep site is a cross-slope: the sole cannot lie
+    // flat across the grade, the foot rests on one edge, and no amount of
+    // seating will change it. On the Copernicus wall that is 100 % of loaded
+    // frames with the ankle exactly on its 15 degree stop.
+    const roll = s.clips?.A?.ik?.ankleRollSaturated;
+    if (roll !== undefined) {
+      if (roll < 0.15) return '';
+      return `<div class="note"><b>Ankle at its roll limit.</b> On
+        ${Math.round(roll * 100)}% of loaded frames the ankle is against its
+        15° roll stop and the sole cannot lie flat across the grade, so the
+        foot rests on an edge. That is the hardware running out, not the
+        contact solver — and it is why a sensible route across a steep face
+        traverses rather than attacking it square on.</div>`;
+    }
+
     const worst = CLIP_KEYS
       .map((k) => ['left', 'right'].map((side) =>
         ({ k, side, r: jointSaturation(s.clips[k], `${side}_ankle_pitch_joint`) })))

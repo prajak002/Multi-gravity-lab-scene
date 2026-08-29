@@ -94,6 +94,59 @@ exactly 2.29 because the small force-limited part of the push does respond to
 `g`, and that residual is the signature of a real machine rather than a
 projectile.
 
+### Three things a generated hop got wrong before it got them right
+
+Each was found by measuring the clip rather than looking at it, and each shows
+up as a joint rate no hardware could follow.
+
+**The swing parameter restarted three times per stride.** A hop has three
+phases — crouch, flight, absorb — and in a lope the trailing foot is off the
+ground for all of them. Driven by the phase-local parameter it travelled from
+one foothold to the next during the crouch, snapped back at take-off and did it
+again: **3787 deg/s at the hip**, all of it at phase boundaries. A foot in the
+air for the whole hop needs a parameter that spans the whole hop.
+
+**The arc landed at the height it took off from.** The ballistic term was
+measured from the take-off foothold, but the landing footholds are a stride
+further along and on a slope that is somewhere else — so the pelvis teleported
+at the touchdown frame, **191 mm on Malapert Massif, 203 on Hadley**, which is
+six metres per second in a single frame. The arc now rides a baseline running
+from one support height to the other; apex and hang are untouched, and at the
+end of flight the ballistic term is exactly zero, so the body arrives at
+standing height over the new footholds with nothing left to jump.
+
+**Seating the foot per frame put a step in the target.** Correcting for what
+the ankle could not conform to is right, but done per frame it switches on at
+the instant a foot becomes loaded. The foothold is seated once, at plan time,
+so the swing arc ends exactly where the stance begins.
+
+**And you cannot squat as deep on a hill.** Absorbing a landing folds the leg
+over a planted foot, which is dorsiflexion — but on a grade the ankle has
+already spent part of its range getting the sole onto the slope. Asking for the
+full crouch anyway does not produce a deeper crouch, it produces an ankle on its
+stop with the heel driven into the hill. The absorb is now bounded by the range
+actually left, which took the Copernicus wall from 64 mm to 25.
+
+### Where the hardware, not the solver, runs out
+
+A generated motion is solved against the terrain the same way a packet is, and
+it is seated on its own contact spheres afterwards for the same reason: the
+foothold is planned under a level sole, the ankle then clamps to its URDF
+limits, and a foot that cannot conform tips onto an edge and sits *higher*.
+Adding that pass took the steep lunar sites from 69.5 mm of sole into the hill
+on Malapert Massif to 0.0 mm.
+
+It does not fix everything, and it should not. On the **Copernicus** terraced
+wall a two-foot bound lands with `ankle_roll` at exactly its -0.2618 rad stop
+and the knee fully extended, on **100 % of loaded frames**, with 22.8 mm of
+sole in the hill. The cross-slope is simply steeper than the 15 degrees the G1's
+ankle can conform to, so no seating pass can put the sole flat. Gale Crater, on
+the same solver, saturates on 0 %.
+
+That number is measured and reported rather than iterated away — it is the same
+limit that makes people traverse a steep face instead of attacking it square
+on, and the arena says so in the panel when it happens.
+
 ### Low gravity makes you SLOW
 
 The result people find hardest to believe, and the reason the Apollo crews

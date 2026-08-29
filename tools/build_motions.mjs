@@ -33,7 +33,8 @@ import fs from 'fs';
 import { SiteField, SURFACE_PROFILES } from '../src/terrain/SiteField.js';
 import { MOTIONS, strideFor, toppleTime } from '../src/sim/Ballistic.js';
 import {
-  legIK, legFK, LEG_CHAIN, NEUTRAL_LEG, rpyFixed, matToQuat, mmul, rotAxis,
+  legIK, legFK, LEG_CHAIN, NEUTRAL_LEG, rpyFixed, matToQuat, mmul, mapv, mT,
+  contactPoints,
 } from '../src/sim/G1Kinematics.js';
 import { audit } from './audit_contact.mjs';
 import { rateAudit, JOINT_RATE_LIMIT } from './audit_rates.mjs';
@@ -59,6 +60,21 @@ const LEG_STAND = 0.70;
  * IK actually places.
  */
 const SOLE_DROP = 0.035;
+/**
+ * How far a contact sphere is allowed to sit below the surface, metres.
+ *
+ * Regolith compresses under load, so a few millimetres is real rather than an
+ * error — tools/retarget.mjs plants the packets' soles to the same depth, and
+ * matching it keeps the generated motions and the retargeted ones directly
+ * comparable in the audit.
+ */
+const REGOLITH = 0.004;
+/** Seating iterations. See the seating pass for why four rather than two. */
+const SEAT_PASSES = 4;
+/** The URDF's ankle roll stop, rad — LEG_LIMITS' last entry, either side. */
+const ANKLE_ROLL_LIMIT = 0.2618;
+/** The URDF's ankle dorsiflexion stop, rad — LEG_LIMITS' ankle pitch lower. */
+const ANKLE_PITCH_LIMIT = 0.87267;
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 const smooth = (t) => (t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t));
@@ -133,6 +149,63 @@ function foothold(side, x, y, heading, field, widen) {
 }
 
 /**
+ * How far this foothold has to rise for the sole to clear the ground.
+ *
+ * The foothold height is planned from a plane fitted under a LEVEL sole. The
+ * ankle then clamps to its URDF limits — +-15 degrees of roll — so on ground
+ * steeper than that the sole ends up at a different angle from the one it was
+ * planned for, and a foot that cannot conform tips onto an edge and sits
+ * HIGHER. Solved without accounting for it, the opposite corner goes into the
+ * hill: 69.5 mm on Malapert Massif before this existed.
+ *
+ * So the achieved sole is taken back out of forward kinematics, the deepest of
+ * the four contact spheres is measured against the ground directly beneath IT,
+ * and the foothold is raised by that much less the regolith compression the
+ * retargeter also allows. Iterated, because the correction changes the pose,
+ * which changes the tilt, which changes the correction.
+ *
+ * The pose used is a nominal stance: the pelvis on the hop's own centreline at
+ * standing height, body level. It is not the pose of any particular frame, and
+ * that is the point — one answer for the whole stance, so the foothold does not
+ * move under the robot while it is standing on it.
+ *
+ * The pelvis has to be on the CENTRELINE and not over the foot. Over the foot
+ * the nominal hip roll is zero, which is right for a lope (one foot carries and
+ * the body is above it) and badly wrong for a bound (both feet carry and the
+ * body is between them). Solved over the foot, the bound's ankle came out at a
+ * different roll from the one it actually reaches, the seating offset was
+ * computed for a tilt the foot never has, and Malapert Massif went back to
+ * 69.5 mm of sole in the hill while the lope on the same site sat at 0.0.
+ */
+function seatOffset(side, hold, field, heading, cx, cy, standZ) {
+  const Rb = rpyFixed(0, 0, heading);
+  const RbT = mT(Rb);
+  const RT = mmul(RbT, rpyFixed(hold.roll, hold.pitch, heading));
+  const px = cx, py = cy, pz = standZ;
+  let lift = 0, q = NEUTRAL_LEG.slice();
+
+  for (let pass = 0; pass < SEAT_PASSES; pass++) {
+    const d = [hold.x - px, hold.y - py, (hold.z + lift) - pz];
+    const pT = [
+      RbT[0] * d[0] + RbT[1] * d[1] + RbT[2] * d[2],
+      RbT[3] * d[0] + RbT[4] * d[1] + RbT[5] * d[2],
+      RbT[6] * d[0] + RbT[7] * d[1] + RbT[8] * d[2],
+    ];
+    const r = legIK(side, pT, RT, q);
+    q = r.q;
+    let deepest = 0;
+    for (const c of contactPoints(side, r.q)) {
+      const w = mapv(Rb, c);
+      const need = field.heightAt(px + w[0], -(py + w[1])) - (pz + w[2]);
+      if (need > deepest) deepest = need;
+    }
+    if (deepest <= REGOLITH) break;
+    lift += deepest - REGOLITH;
+  }
+  return lift;
+}
+
+/**
  * One clip: a motion, at one site, in that site's gravity.
  */
 export function buildMotion(siteId, motionId) {
@@ -153,14 +226,41 @@ export function buildMotion(siteId, motionId) {
   const { hops, cycle } = plan(motion, phys, { heading, origin, field });
   const n = Math.round(DURATION * FPS);
 
-  // Footholds, one pair per hop, planted before any pose is solved.
+  // Footholds, one pair per hop, planted and SEATED before any pose is solved.
+  //
+  // Seating has to happen here rather than per frame. Done per frame it is a
+  // correction that switches on at the instant a foot becomes loaded, so the
+  // target steps by however much the ankle could not conform — and the solver
+  // takes that step in one frame. Measured on Hadley, that put 2030 deg/s
+  // through the knee at touchdown, against the ~557 deg/s the landing itself
+  // actually asks for. Seating the foothold instead means the swing arc ends
+  // exactly where the stance begins, and nothing steps at all.
   const widen = 0.02 + (motion.feet === 'together' ? 0.015 : 0);
   for (const h of hops) {
     h.hold = {};
+    const raw = {};
+    for (const side of ['left', 'right']) raw[side] = foothold(side, h.x0, h.y0, heading, field, widen);
+    const standZ = Math.max(raw.left.z, raw.right.z) + LEG_STAND;
     for (const side of ['left', 'right']) {
-      h.hold[side] = foothold(side, h.x0, h.y0, heading, field, widen);
-      h.next = null;
+      const f = raw[side];
+      f.z += seatOffset(side, f, field, heading, h.x0, h.y0, standZ);
+      h.hold[side] = f;
     }
+
+    // YOU CANNOT SQUAT AS DEEP ON A HILL.
+    //
+    // Absorbing a landing folds the leg, and folding the leg over a planted
+    // foot is dorsiflexion — but on a grade the ankle has ALREADY spent part of
+    // its range just getting the sole onto the slope. What is left is what the
+    // absorb can use, and asking for more does not produce a deeper crouch, it
+    // produces an ankle on its stop with the heel driven into the hill.
+    //
+    // Measured on Malapert Massif before this: six frames of three hundred, all
+    // at the bottom of the landing absorb, with the sole 69 mm into the slope.
+    // Everywhere else on the same clip was 0.0 mm — it is specifically the
+    // deepest part of the crouch that the hardware cannot do here.
+    const spent = Math.max(Math.abs(h.hold.left.pitch), Math.abs(h.hold.right.pitch));
+    h.crouch = phys.crouch * clamp((ANKLE_PITCH_LIMIT - spent) / ANKLE_PITCH_LIMIT, 0.3, 1);
   }
   for (let i = 0; i < hops.length; i++) hops[i].after = hops[i + 1] || hops[i];
 
@@ -170,7 +270,13 @@ export function buildMotion(siteId, motionId) {
   const rows = [];
   const contacts = [];
   const qSeed = { left: NEUTRAL_LEG.slice(), right: NEUTRAL_LEG.slice() };
-  const diag = { maxPosErr: 0, maxRotErr: 0, clamped: 0 };
+  // Saturation is REPORTED, not hidden. On a steep cross-slope the ankle runs
+  // out of roll before the sole can lie flat, the foot rests on an edge, and no
+  // amount of seating will fix it — measured on the Copernicus wall, a landing
+  // bound sits with ankleRoll at exactly its -0.2618 stop and the knee fully
+  // extended, 23 mm of sole into the hill. That is the machine, not the solver,
+  // and it is the same limit that makes people switchback up steep ground.
+  const diag = { maxPosErr: 0, maxRotErr: 0, rollSaturated: 0, loadedFrames: 0 };
 
   for (let i = 0; i < n; i++) {
     const t = i / FPS;
@@ -206,23 +312,42 @@ export function buildMotion(siteId, motionId) {
     // solver drags it forward across the ground to catch up. It measured as
     // 146 % slip on the bound: the feet skated further than the robot moved.
     const hold = (t < h.land) ? h.hold : nxt.hold;
-    const support = Math.max(hold.left.z, hold.right.z);
+    const supFrom = Math.max(h.hold.left.z, h.hold.right.z);
+    const supTo = Math.max(nxt.hold.left.z, nxt.hold.right.z);
+    const support = (t < h.land) ? supFrom : supTo;
     let pz;
     if (airborne) {
       const tf = u * phys.flightTime;
-      // z = v0 t - g t^2 / 2, on top of the height it left at.
-      pz = support + LEG_STAND + phys.v0 * tf - 0.5 * g * tf * tf;
+      // THE ARC HAS TO LAND WHERE THE NEXT FOOTHOLDS ARE.
+      //
+      // Measured from the take-off height alone, the parabola returns to the
+      // height it left at — but the landing footholds are a stride further
+      // along, and on a slope that is somewhere else entirely. The pelvis
+      // therefore teleported at the touchdown frame, by 191 mm on Malapert
+      // Massif and 203 on Hadley: six metres per second of pelvis velocity in
+      // a single frame, which is where the 2030 deg/s knee spike came from and,
+      // on the steepest sites, why the sole ended up 69 mm into the hill.
+      //
+      // So the ballistic term rides on a baseline that runs from one support
+      // height to the other. The arc above the take-off point is untouched —
+      // apex and hang are still v0^2/2g and 2 v0/g, which is what the readout
+      // quotes — and at u = 1 the ballistic term is exactly zero, so the body
+      // arrives at standing height over the new footholds with nothing to jump.
+      const base = lerp(supFrom, supTo, u);
+      pz = base + LEG_STAND + phys.v0 * tf - 0.5 * g * tf * tf;
     } else if (t < h.takeoff) {
       // Crouch, then extend. The crouch is the slow half and the extension is
       // the fast one, which is what makes the push read as a push.
       const c = (t - h.t0) / Math.max(h.takeoff - h.t0, 1e-3);
       const cr = c < 0.62 ? smooth(c / 0.62) : 1 - smooth((c - 0.62) / 0.38);
-      pz = support + LEG_STAND - phys.crouch * cr;
+      pz = support + LEG_STAND - h.crouch * cr;
     } else {
       // Landing: absorb, then come back up to standing.
       const a = clamp(u / 0.55, 0, 1);
       const back = clamp((u - 0.55) / 0.45, 0, 1);
-      pz = support + LEG_STAND - phys.crouch * (smooth(a) - smooth(back));
+      // The absorb belongs to the hop being LANDED on, which is the next one:
+      // its footholds are the ones the ankle is fighting.
+      pz = support + LEG_STAND - (nxt.crouch ?? h.crouch) * (smooth(a) - smooth(back));
     }
 
     // ---- the trip ---------------------------------------------------------
@@ -254,15 +379,39 @@ export function buildMotion(siteId, motionId) {
         // reason: a straight line between two good footholds goes through
         // anything sitting between them.
         const from = h.hold[side], to = nxt.hold[side];
-        const w = smooth(smooth(u));
+
+        // ONE monotonic parameter for the whole swing.
+        //
+        // `u` restarts at each phase of the hop — crouch, flight, absorb — and
+        // in a LOPE the trailing foot is off the ground for all three of them.
+        // Driven by `u` it therefore travelled from one foothold to the next
+        // during the crouch, snapped back at take-off and did it again, so the
+        // target jumped twice per stride and the solver chased it in a single
+        // frame: 3787 deg/s at the hip against hardware rated near 500, all of
+        // it at contact transitions. A foot that is in the air for the whole
+        // hop gets a parameter that spans the whole hop.
+        const su = h.feet.includes(side)
+          ? u                                            // down except in flight
+          : clamp((t - h.t0) / Math.max(h.end - h.t0, 1e-3), 0, 1);
+        const w = smooth(smooth(su));
         const fx = lerp(from.x, to.x, w), fy = lerp(from.y, to.y, w);
         const along = field.footPlane(fx, -fy, heading).peak;
         const base = lerp(from.z, to.z, w);
         // Clearance scales with the hop: a 1.18 m apex lifts the feet with it.
         const clear = clamp(0.06 + phys.apex * 0.35, 0.06, 0.55);
-        const arc = Math.sin(Math.PI * u) * clear;
+        const arc = Math.sin(Math.PI * su) * clear;
         const floorH = along + SOLE_DROP;
-        f = { x: fx, y: fy, z: Math.max(base + arc, floorH), pitch: 0, roll: 0 };
+        // Orientation is interpolated between the two footholds, not held
+        // level. Held level it snapped to the landing tilt in the single frame
+        // the foot became loaded — ten to twenty degrees at once on a slope,
+        // which the IK spreads up the whole leg and which was the other half of
+        // that touchdown spike. The toe-up shaping is a sine, so it is zero at
+        // both ends and adds no discontinuity of its own.
+        f = {
+          x: fx, y: fy, z: Math.max(base + arc, floorH),
+          pitch: lerp(from.pitch, to.pitch, w) - Math.sin(Math.PI * su) * 0.12,
+          roll: lerp(from.roll, to.roll, w),
+        };
         if (hi === tripHop && side === h.feet[0]) {
           // The catch: the foot stops rising and stubs into the surface.
           // The stub: the sole stops rising and drives 15 mm into the
@@ -270,6 +419,9 @@ export function buildMotion(siteId, motionId) {
           f.z = Math.min(f.z, along + SOLE_DROP - 0.015);
         }
       }
+      // Carried through to the solve, which is a separate loop: only a foot
+      // that is taking load gets seated on its contact spheres.
+      f.down = down;
       foot[side] = f;
     }
 
@@ -287,9 +439,18 @@ export function buildMotion(siteId, motionId) {
       ];
       const RT = mmul(RbodyT, rpyFixed(f.roll, f.pitch, heading));
       const r = legIK(side, pT, RT, qSeed[side]);
+
+      // No per-frame seating: the foothold was already seated at plan time,
+      // and correcting again here is exactly what put a step in the target at
+      // every touchdown. What ankle roll cannot absorb is reported below
+      // rather than chased.
       qSeed[side] = r.q;
       diag.maxPosErr = Math.max(diag.maxPosErr, r.posErr);
       diag.maxRotErr = Math.max(diag.maxRotErr, r.rotErr);
+      if (f.down) {
+        diag.loadedFrames++;
+        if (Math.abs(Math.abs(r.q[5]) - ANKLE_ROLL_LIMIT) < 1e-3) diag.rollSaturated++;
+      }
       const base = side === 'left' ? 0 : 6;
       for (let k = 0; k < 6; k++) rowJoints[base + k] = r.q[k];
     }
@@ -325,7 +486,7 @@ export function buildMotion(siteId, motionId) {
     ]);
   }
 
-  return { rows, contacts, phys, field, heading, motion, site, g };
+  return { rows, contacts, phys, field, heading, motion, site, g, diag };
 }
 
 // ---------------------------------------------------------------------------
@@ -363,6 +524,12 @@ export function buildMotionScene(siteId) {
         toppleTime: toppleTime(r.g, 0.6),
       },
       audit: { after: audit(r.rows, (x, y) => r.field.heightAt(x, -y), r.contacts) },
+      ik: {
+        maxPosErr: r.diag.maxPosErr, maxRotErr: r.diag.maxRotErr,
+        // Fraction of loaded foot-frames with the ankle against its roll stop.
+        ankleRollSaturated: r.diag.loadedFrames
+          ? r.diag.rollSaturated / r.diag.loadedFrames : 0,
+      },
     };
     const ra = rateAudit(clip);
     let peak = 0, over = 0, frames = 0;
@@ -379,10 +546,10 @@ export function buildMotionScene(siteId) {
   return out;
 }
 
-if (process.argv[1].endsWith('build_motions.mjs')) {
+if (process.argv[1]?.endsWith('build_motions.mjs')) {
   const ids = process.argv.length > 2 ? process.argv.slice(2)
     : Object.keys(SITES).filter((k) => SITES[k].dem);
-  console.log('site'.padEnd(30) + 'motion  apex    hang   duty   vmax   penet   slip%');
+  console.log('site'.padEnd(30) + 'motion  apex    hang   duty   vmax   penet   slip%  rollSat%');
   for (const id of ids) {
     try {
       const out = buildMotionScene(id);
@@ -391,7 +558,8 @@ if (process.argv[1].endsWith('build_motions.mjs')) {
         console.log(`${id.padEnd(30)}${m.padEnd(7)} `
           + `${p.apex.toFixed(2).padStart(5)}m ${p.hang.toFixed(2).padStart(6)}s `
           + `${p.duty.toFixed(2).padStart(6)} ${p.speedCeiling.toFixed(2).padStart(5)} `
-          + `${(a.penetration * 1000).toFixed(1).padStart(7)}mm ${(a.schedSlipFrac * 100).toFixed(1).padStart(6)}`);
+          + `${(a.penetration * 1000).toFixed(1).padStart(7)}mm ${(a.schedSlipFrac * 100).toFixed(1).padStart(6)}`
+          + `${(c.ik.ankleRollSaturated * 100).toFixed(0).padStart(8)}`);
       }
     } catch (e) {
       console.log(`${id.padEnd(30)}FAILED: ${e.message}`);
