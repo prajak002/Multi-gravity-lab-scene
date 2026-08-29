@@ -75,14 +75,45 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%;
 .prov b { color: #b6c0cc; font-weight: 600; }
 .prov em { color: #6f7986; font-style: normal; }
 
-/* ---- scenes ------------------------------------------------------------ */
-#scenes { flex: 0 0 auto; margin-top: auto;
-  display: flex; flex-wrap: wrap; gap: 5px; }
-#scenes button { pointer-events: auto; font: 10px/1 var(--mono); letter-spacing: .06em;
-  text-transform: uppercase; color: var(--dim); background: rgba(9,11,15,.72);
-  border: 1px solid var(--line); border-radius: 5px; padding: 6px 8px; cursor: pointer; }
-#scenes button:hover { color: var(--fg); border-color: rgba(255,255,255,.3); }
-#scenes button.on { background: var(--fg); color: #0a0c10; border-color: var(--fg); }
+/* ---- browse: body / place / motion -------------------------------------
+   Three stacked rows rather than one flat list. With forty places a single
+   wrap of buttons is a wall, and it also hides the structure that matters:
+   the body sets the gravity, the place sets the ground, the motion sets what
+   the robot is doing. The place list is the only one allowed to scroll —
+   sixteen lunar sites will not fit, and the tabs and motions above and below
+   it must stay reachable however long it gets. */
+#browse { flex: 0 0 auto; margin-top: auto; display: flex; flex-direction: column;
+  gap: 7px; pointer-events: auto; }
+
+#tabs { display: flex; gap: 5px; }
+#tabs button { flex: 1 1 0; pointer-events: auto; cursor: pointer;
+  font: 600 11px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase;
+  color: var(--dim); background: rgba(9,11,15,.72);
+  border: 1px solid var(--line); border-radius: 6px; padding: 9px 6px;
+  display: flex; align-items: center; justify-content: center; gap: 6px; }
+#tabs button:hover { color: var(--fg); border-color: rgba(255,255,255,.3); }
+#tabs button.on { background: var(--fg); color: #0a0c10; border-color: var(--fg); }
+#tabs button i { font-style: normal; font-size: 9px; opacity: .55; }
+
+#places { display: flex; flex-wrap: wrap; gap: 4px;
+  max-height: 152px; overflow-y: auto; overscroll-behavior: contain;
+  padding-right: 2px; }
+#places::-webkit-scrollbar { width: 6px; }
+#places::-webkit-scrollbar-thumb { background: rgba(255,255,255,.18); border-radius: 3px; }
+#places button, #motions button {
+  pointer-events: auto; cursor: pointer; font: 10px/1 var(--mono);
+  letter-spacing: .05em; text-transform: uppercase; color: var(--dim);
+  background: rgba(9,11,15,.72); border: 1px solid var(--line);
+  border-radius: 5px; padding: 6px 8px; display: flex; align-items: baseline; gap: 6px; }
+#places button:hover, #motions button:hover { color: var(--fg); border-color: rgba(255,255,255,.3); }
+#places button.on, #motions button.on { background: var(--fg); color: #0a0c10; border-color: var(--fg); }
+/* How much of the ground under this place was measured, or how long the module
+   is. On the button, because otherwise a 1 m/px HiRISE site and a 200 m/px
+   global-blend site look equally authoritative in the picker. */
+#places button i { font-style: normal; font-size: 9px; opacity: .5; white-space: nowrap; }
+
+#motions { display: flex; flex-wrap: wrap; gap: 4px; }
+#motions button { letter-spacing: .1em; }
 
 /* ---- transport --------------------------------------------------------- */
 #bar { position: absolute; left: 22px; right: 22px; bottom: 20px; height: 38px;
@@ -134,3 +165,24 @@ canvas { position: fixed; inset: 0; width: 100%; height: 100%;
 #g1rate:hover { background: rgba(214,180,106,.2); }
 #g1rate.ok { color: #7fc99a; background: rgba(127,201,154,.10);
   border-color: rgba(127,201,154,.35); }
+
+/* ---- gravity readout ----------------------------------------------------
+   Three columns: label, this body, the other one. The comparison is the whole
+   content of a generated motion — the packet view compares two controllers on
+   one body, this compares one machine across two fields — so the second column
+   is not an aside and gets equal weight to the first. */
+.phys { margin-top: 14px; }
+.phys .head, .phys .row { display: grid; grid-template-columns: 1fr auto auto;
+  gap: 10px; align-items: baseline; font: 11px/1.7 var(--mono); }
+.phys .head { color: var(--dim); font-size: 9.5px; letter-spacing: .14em;
+  border-bottom: 1px solid var(--line); padding-bottom: 4px; margin-bottom: 3px; }
+.phys .head b, .phys .head u { text-decoration: none; font-weight: 600;
+  min-width: 62px; text-align: right; }
+.phys .head b { color: var(--fg); }
+.phys .row { color: var(--dim); }
+.phys .row b, .phys .row u { text-decoration: none; min-width: 62px;
+  text-align: right; white-space: nowrap; font-weight: 500; }
+.phys .row b { color: var(--fg); }
+.phys .row u { color: #7c8794; }
+.phys .why { margin: 10px 0 0; font: 10.5px/1.6 var(--mono); color: var(--dim); }
+.phys .why b { color: #b6c0cc; font-weight: 600; }

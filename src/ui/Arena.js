@@ -20,7 +20,9 @@ import {
 import { ENVIRONMENTS, byId, sunDir } from '../render/Environments.js';
 import { IBL } from '../render/IBL.js';
 import { loadRobot, robotById } from '../render/Robots.js';
-import { loadScene, discoverScenes, ClipPlayer, jointSaturation } from '../scenes/SceneLoader.js';
+import { loadScene, loadPlace, loadPlaces, ClipPlayer, jointSaturation, posToRender } from '../scenes/SceneLoader.js';
+import { visibleSole, clearSwingFoot } from '../sim/Footing.js';
+import { LaneField } from '../terrain/LaneField.js';
 
 // A G1 is 1.32 m tall and about 0.5 m across at the arms. This is the radius
 // of the ball one of them needs to sit inside, which is what the framing has
@@ -32,8 +34,26 @@ const FRAME_MARGIN = 1.18;
 const _half = new Vector3();
 const _size = new Vector2();
 const _view = new Vector3();
+const _pt = new Vector3();
+const clampTo = (v, a, b) => Math.min(b, Math.max(a, v));
 
 const CLIP_KEYS = ['A', 'B'];
+// loaded.feet is ordered left, right — the same order as loaded.soles.
+const SIDES = ['left', 'right'];
+
+/** Generated motions, as the picker names them. */
+const MOTION_LABEL = { lope: 'LOPE', bound: 'BOUND', trip: 'TRIP + RECOVER' };
+const MOTION_TITLE = {
+  lope: 'The gait the Apollo crews adopted within minutes on every mission: '
+      + 'one foot at a time, airborne between every step.',
+  bound: 'Both feet together, everything into the vertical. The same push on '
+       + 'every body, so the whole difference in height is the field.',
+  trip: 'A caught toe and the fall that follows. Toppling scales as 1/sqrt(g), '
+      + 'so one sixth gravity buys well over a second of extra warning.',
+};
+// Corridor samples per lane. See LaneField.setLanes for why a traverse needs a
+// polyline rather than its chord.
+const LANE_PATH_POINTS = 24;
 
 /** Which environment's lighting a scene borrows. */
 const envForBody = (body) =>
@@ -187,7 +207,7 @@ export class Arena {
         const x = x0 + (i / nx) * (x1 - x0);
         const z = z0 + (j / nz) * (z1 - z0);
         const k = (j * (nx + 1) + i) * 3;
-        pos[k] = x; pos[k + 1] = this.field.heightAt(x, z); pos[k + 2] = z;
+        pos[k] = x; pos[k + 1] = this.ground(x, z); pos[k + 2] = z;
       }
     }
     for (let j = 0; j < nz; j++) {
@@ -206,8 +226,63 @@ export class Arena {
     return g;
   }
 
+  /**
+   * The ground, for everything: the mesh that is drawn and the guard that
+   * decides a foot is in it. One function, so the two cannot disagree.
+   */
+  /**
+   * True only when there really are two runs to compare.
+   *
+   * A generated motion has one clip, and everything that exists to separate,
+   * wipe between or frame A PAIR has to switch off — otherwise the empty lane
+   * still gets its half of the separation, the camera still frames a robot
+   * that is not there, and the previous scene's robot B is left standing in
+   * the shot holding its last pose.
+   */
+  get paired() { return !!(this.players.A && this.players.B); }
+
+  ground(x, z) {
+    if (this.laneField) return this.laneField.heightAt(x, z);
+    return this.field ? this.field.heightAt(x, z) : 0;
+  }
+
+  /**
+   * Tell the lane field where the two runs are about to be drawn.
+   *
+   * Called whenever anything that moves a lane changes — the scene, the
+   * separation slider, the mode toggle — because the ground has to follow the
+   * robot for the footholds to stay solved. See LaneField for why.
+   */
+  _updateLanes() {
+    if (!this.field) { this.laneField = null; return; }
+    if (!this.laneField || this.laneField.field !== this.field) {
+      this.laneField = new LaneField(this.field);
+    }
+    const sep = (this.mode === 'lanes' && this.paired) ? this.separation : 0;
+    const lanes = [];
+    for (const k of CLIP_KEYS) {
+      const p = this.players[k];
+      if (!p) continue;
+      const offset = this.laneAxis.clone()
+        .multiplyScalar((k === 'A' ? -1 : 1) * sep * 0.5);
+      // The corridor follows the traverse itself. Decimated, because a lane
+      // weight is evaluated once per terrain vertex and the shape of a five
+      // metre walk survives being sampled every few frames.
+      const root = p.clip.root;
+      const stride = Math.max(1, Math.floor(root.length / LANE_PATH_POINTS));
+      const path = [];
+      for (let i = 0; i < root.length; i += stride) path.push(posToRender(root[i]).add(offset));
+      const last = posToRender(root[root.length - 1]).add(offset);
+      if (path.length < 2 || path[path.length - 1].distanceToSquared(last) > 1e-6) path.push(last);
+      lanes.push({ offset, path });
+    }
+    this.laneField.setLanes(lanes, sep);
+    this._terrainDirty = true;
+  }
+
   buildTerrain(env) {
     if (this.terrain) { this.world.remove(this.terrain); this.terrain = null; }
+    this._terrainDirty = false;
     if (!this.field) return;
 
     // Bounds of the traverse, from the clips themselves.
@@ -233,10 +308,14 @@ export class Arena {
     near.receiveShadow = true; near.castShadow = false;
     grp.add(near);
 
-    const span = Math.min(this.field.half * 2 - 2, 380);
+    // The far ring fills the patch, which is now 2:1 with its long axis along
+    // the traverse — so it reaches further ahead of the walk than beside it,
+    // which is also where a viewer looks.
+    const spanX = Math.min(this.field.halfX * 2 - 2, 760);
+    const spanZ = Math.min(this.field.halfZ * 2 - 2, 380);
     const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
-    const far = new Mesh(this._grid(cx - span / 2, cx + span / 2, cz - span / 2, cz + span / 2,
-                                    span / 240, [x0, x1, z0, z1]), mat);
+    const far = new Mesh(this._grid(cx - spanX / 2, cx + spanX / 2, cz - spanZ / 2, cz + spanZ / 2,
+                                    Math.max(spanX, spanZ) / 240, [x0, x1, z0, z1]), mat);
     far.receiveShadow = true;
     grp.add(far);
 
@@ -283,18 +362,38 @@ export class Arena {
     const panel = () => new MeshStandardMaterial({
       color: 0x9aa4b0, roughness: 0.8, metalness: 0.1, side: DoubleSide });
 
-    const wall = new Mesh(this._quad(1.7, 1.7), panel());
-    wall.position.copy(start);
-    wall.position.x -= dir * 0.35;
-    wall.rotation.y = Math.PI / 2;
-    grp.add(wall);
+    // Where the panels go is decided by the robots, not by the pelvis path.
+    //
+    // These were placed at a fixed offset from the clip's own start and
+    // capture points — 0.35 m behind one, 0.42 m past the other. A pelvis is
+    // not the robot: through the push-off the feet reach back well past it and
+    // through the reach the hands go well forward. Measured on BrakeGap, the
+    // pair swept x from -0.07 to 4.16 against panels standing at 0.28 and
+    // 3.82, so the robot went straight through BOTH walls, by about a third of
+    // a metre each. Taking the swept bounds puts each panel where the furthest
+    // part of either robot actually arrives, which is what makes the push-off
+    // land on the wall and the bulkhead stop the clip that hits it.
+    const swept = this._sweptBounds();
+    const launchX = dir > 0 ? swept.min.x : swept.max.x;
+    const farX = dir > 0 ? swept.max.x : swept.min.x;
 
-    const far = new Mesh(this._quad(1.9, 1.9), panel());
-    far.position.copy(target);
-    far.position.x += dir * 0.42;
-    far.position.y += 0.1;
-    far.rotation.y = Math.PI / 2;
-    grp.add(far);
+    // Inside a module the bulkheads ARE the two walls, so drawing free-standing
+    // panels as well would put a second surface a few centimetres in front of
+    // each of them.
+    if (!this.module) {
+      const wall = new Mesh(this._quad(1.7, 1.7), panel());
+      wall.position.copy(start);
+      wall.position.x = launchX;
+      wall.rotation.y = Math.PI / 2;
+      grp.add(wall);
+
+      const far = new Mesh(this._quad(1.9, 1.9), panel());
+      far.position.copy(target);
+      far.position.x = farX;
+      far.position.y += 0.1;
+      far.rotation.y = Math.PI / 2;
+      grp.add(far);
+    }
 
     // The handrail it is reaching for, across the far end of the glide.
     const railMat = new MeshStandardMaterial({ color: 0xd8c07a, metalness: 0.65, roughness: 0.3 });
@@ -319,6 +418,151 @@ export class Arena {
       grp.add(t);
     }
     this.microSet = grp;
+    this.world.add(grp);
+  }
+
+  /**
+   * The box both robots pass through over the whole clip.
+   *
+   * Sampled rather than solved: there is no closed form for the reach of a
+   * 29-joint chain across three hundred frames, and the answer is only needed
+   * once per scene load. Playback position is saved and restored, so building
+   * the set does not jog the clock the viewer is showing.
+   */
+  _sweptBounds(samples = 48) {
+    const box = new Box3();
+    const t0 = this.t, playing = this.playing;
+    this.playing = false;
+    const dur = this.players.A?.duration ?? this.players.B?.duration ?? 10;
+    for (let s = 0; s <= samples; s++) {
+      this.t = (s / samples) * dur;
+      for (const k of CLIP_KEYS) {
+        const p = this.players[k], r = this.robots[k];
+        if (!p || !r) continue;
+        p.sample(this.t);
+        r.root.position.copy(p.pos);
+        r.root.quaternion.copy(p.quat);
+        for (const [name, v] of Object.entries(p.joints)) r.joints[name]?.setJointValue(v);
+        r.root.updateMatrixWorld(true);
+        box.expandByObject(r.root);
+      }
+    }
+    this.t = t0; this.playing = playing;
+    return box;
+  }
+
+  /**
+   * The pressurised module a microgravity scenario is playing inside.
+   *
+   * Drawn at the element's REAL published dimensions — Destiny is 8.53 m long
+   * and 4.27 m across, Kibo 11.19 by 4.4, Cupola 1.5 by 2.95 — because that is
+   * the entire reason to draw an interior at all. An enclosure earns its place
+   * by giving the eye a known measurement to compare a 1.32 m robot against,
+   * and a shell fitted to an arbitrary target length throws exactly that away.
+   * It is also what makes the eight modules different from each other: the
+   * scenario is identical in all of them and the room is not, so a push that
+   * overshoots by half a metre is a caught handrail in Kibo and a collision in
+   * Cupola.
+   *
+   * Built rather than loaded. env/iss_corridor.glb is one specific 43.8 m
+   * run; rescaling it to stand in for a 6.87 m laboratory would put the same
+   * lie back in by another route.
+   *
+   * DoubleSide throughout, because the camera clamps INSIDE the cross-section
+   * and every face is being viewed from behind.
+   */
+  buildModule(place) {
+    if (this.module) { this.world.remove(this.module); this.module = null; }
+    this.moduleBounds = null;
+    const dims = place?.module;
+    if (!dims) return;
+
+    const r = dims.diameter / 2, len = dims.length;
+    const grp = new Group();
+    const shell = new MeshStandardMaterial({
+      color: 0xb9bec4, roughness: 0.72, metalness: 0.12, side: DoubleSide });
+    const rackMat = new MeshStandardMaterial({
+      color: 0x6f7783, roughness: 0.55, metalness: 0.35, side: DoubleSide });
+
+    // The tube. Along x, which is the axis every micro clip travels on.
+    const SEG = 40;
+    const pos = [], idx = [];
+    for (let i = 0; i <= SEG; i++) {
+      const a = (i / SEG) * Math.PI * 2;
+      pos.push(-len / 2, Math.sin(a) * r, Math.cos(a) * r);
+      pos.push(len / 2, Math.sin(a) * r, Math.cos(a) * r);
+    }
+    for (let i = 0; i < SEG; i++) {
+      const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+      idx.push(a, c, b, b, c, d);
+    }
+    const tube = new BufferGeometry();
+    tube.setAttribute('position', new BufferAttribute(new Float32Array(pos), 3));
+    tube.setIndex(idx);
+    tube.computeVertexNormals();
+    const hull = new Mesh(tube, shell);
+    hull.receiveShadow = true;
+    grp.add(hull);
+
+    // Rack faces down each side, which is what actually narrows the usable
+    // corridor: Destiny's shell is 4.27 m across but the free lane between the
+    // racks is nearer 2 m, and that is the number a glide has to fit through.
+    const rackDepth = Math.min(0.62, r * 0.38);
+    for (const s2 of [-1, 1]) {
+      for (const yy of [-1, 1]) {
+        const face = new Mesh(this._quad(len, r * 0.9), rackMat);
+        face.position.set(0, yy * (r - rackDepth) * 0.72, s2 * (r - rackDepth));
+        face.rotation.y = s2 > 0 ? 0 : Math.PI;
+        grp.add(face);
+      }
+    }
+
+    // Bulkheads, with a hatch through each — the module is a place you pass
+    // through, and a sealed tube reads as a dead end.
+    for (const s2 of [-1, 1]) {
+      const cap = new Mesh(this._quad(dims.diameter, dims.diameter), shell);
+      cap.position.set(s2 * len / 2, 0, 0);
+      cap.rotation.y = Math.PI / 2;
+      grp.add(cap);
+      const hatch = new Mesh(this._quad(0.8, 0.8), new MeshStandardMaterial({
+        color: 0x2a2f36, roughness: 0.9, side: DoubleSide }));
+      hatch.position.set(s2 * (len / 2 - 0.01), 0, 0);
+      hatch.rotation.y = Math.PI / 2;
+      grp.add(hatch);
+    }
+
+    // Handrails along both sides. These are the only things in a module a crew
+    // member actually touches to move, which is what the scenarios are about.
+    const railMat = new MeshStandardMaterial({ color: 0xd8c07a, metalness: 0.6, roughness: 0.32 });
+    for (const s2 of [-1, 1]) {
+      const rail = new Mesh(this._tube(0.021, len * 0.92), railMat);
+      // _tube runs along z, so turn it onto the module axis.
+      rail.rotation.y = Math.PI / 2;
+      rail.position.set(0, -r * 0.35, s2 * (r - rackDepth - 0.12));
+      grp.add(rail);
+    }
+
+    // Centre the module on the run, not on the world origin.
+    //
+    // The clips start whereever their packet put them — BrakeGap sweeps x from
+    // -0.07 to 4.16 — so a shell built about the origin has the robot leaving
+    // it through the side and the camera standing in the racks. The module goes
+    // where the robots are.
+    const swept = this._sweptBounds();
+    if (!swept.isEmpty()) {
+      swept.getCenter(_pt);
+      grp.position.set(_pt.x, _pt.y, _pt.z);
+    }
+    // Cross-section the camera has to stay inside, so a solved shot does not
+    // end up outside a closed shell looking at its back faces. Stage.js does
+    // the same thing for the corridor, and for the same reason.
+    // `free` is the half-width of the corridor BETWEEN the racks, which is the
+    // space anything actually moves through — Destiny's shell is 4.27 m across
+    // and its free lane is nearer 3 m.
+    this.moduleBounds = { centre: grp.position.clone(), r, len,
+                          free: Math.max(0.4, r - rackDepth - 0.2) };
+
+    this.module = grp;
     this.world.add(grp);
   }
 
@@ -353,12 +597,35 @@ export class Arena {
   // -------------------------------------------------------------------------
   // scene switching
   // -------------------------------------------------------------------------
-  async load(id) {
+  /**
+   * Show one place, playing one motion.
+   *
+   * `motion` is 'compare' for the two packet runs this viewer was built
+   * around, the id of a generated motion (lope / bound / trip), or — inside a
+   * module, where there is no ground and therefore no gait — the id of one of
+   * the microgravity scenarios.
+   *
+   * A generated motion has ONE clip, and that is deliberate. The packet view
+   * compares two CONTROLLERS on one body; a generated motion is a statement
+   * about the body itself, and the thing it should be compared against is the
+   * same robot on Mars, which is not standing on this terrain. So the second
+   * lane is empty and the readout carries the comparison instead.
+   */
+  async load(place, motion = 'compare') {
     this.ready = false;
-    const { scene, field } = await loadScene(id);
+    this.place = place;
+    this.motionKey = motion;
+
+    const { scene, field } = place.micro
+      ? await loadScene(motion)
+      : await loadPlace(place.id, motion);
     this.scene_ = scene;
     this.field = field;
 
+    // Clear first. Switching from a two-clip comparison to a one-clip motion
+    // used to leave the previous B player in place, so PragyaSpace went on
+    // walking its old traverse beside a robot that was now hopping.
+    for (const k of CLIP_KEYS) this.players[k] = null;
     for (const k of CLIP_KEYS) {
       if (scene.clips[k]) this.players[k] = new ClipPlayer(scene.clips[k]);
     }
@@ -377,6 +644,9 @@ export class Arena {
       }
       this._tintB();
     }
+    for (const k of CLIP_KEYS) {
+      if (this.robots[k]) this.robots[k].root.visible = !!this.players[k];
+    }
 
     // Lane axis: perpendicular to the traverse, so the two runs sit abreast
     // rather than one behind the other whatever direction the course runs.
@@ -385,14 +655,16 @@ export class Arena {
     if (d.lengthSq() > 1e-6) this.laneAxis.set(-d.z, 0, d.x).normalize();
     else this.laneAxis.set(0, 0, 1);
 
-    const env = envForBody(scene.body);
+    const env = envForBody(scene.body ?? place.body);
     this.env = env;
     // Start as close as the pair can be held from, rather than at a fixed
     // number that was tuned for one separation and one aspect ratio. The
     // clamp in step() is the real floor; this just asks for it.
     this.dist = 0;
     this.applyEnv(env);
+    this._updateLanes();
     this.buildTerrain(env);
+    this.buildModule(place);
     this.buildMicroSet(scene);
     this.t = 0;
     this.ready = true;
@@ -444,6 +716,7 @@ export class Arena {
    * NARROWER of the two half-angles, so it holds in portrait windows too.
    */
   _holdBothDistance() {
+    if (!this.paired) return 0;
     const ra = this.robots.A?.root, rb = this.robots.B?.root;
     if (!ra || !rb) return 0;
 
@@ -460,9 +733,71 @@ export class Arena {
     return (radius * FRAME_MARGIN) / Math.min(halfV, halfH);
   }
 
+  /**
+   * Refuse to draw a foot below the ground.
+   *
+   * The lane offset itself is no longer a problem — LaneField moves the ground
+   * with the robot, so a clip is drawn on exactly the surface it was solved
+   * against and the 270 mm of buried machine that displacement used to cause
+   * is gone by construction. What is left is a smaller, permanent discrepancy
+   * that exists even with the two runs superimposed: 7-19 mm across the twelve
+   * surface scenes.
+   *
+   * That residual is not an error, it is a difference of definition. The
+   * retargeter plans against what the URDF says the robot collides with — for
+   * the G1, four contact spheres on a sole plane at z = -0.035 — and plants
+   * them 4 mm into the regolith on purpose. The shell that is actually DRAWN
+   * extends past those spheres, so a foot sitting exactly where it was planned
+   * still renders a centimetre or so under the surface, and more as the ankle
+   * tilts and the mesh's corner swings below the sphere.
+   *
+   * A viewer cannot re-solve the chain per frame, but it can lift by the
+   * millimetres it takes for nothing visible to be under the ground, which is
+   * what this does. visibleSole() supplies the mesh's own extent.
+   *
+   * Loaded feet only. A swing foot arcing over a boulder is not carrying the
+   * robot, and hoisting the whole body to clear something it is passing above
+   * would make the pelvis bob at every rock — and would erase the low foot
+   * clearance that is one of the two things this page is comparing.
+   */
+  _seat(r, p) {
+    if (!this.field) return;                 // micrograv: nothing to stand on
+
+    const soles = visibleSole(r);
+    if (!soles.length) return;
+    r.root.updateMatrixWorld(true);
+
+    const ground = (x, z) => this.ground(x, z);
+    let lift = 0;
+    for (let i = 0; i < soles.length; i++) {
+      const foot = r.feet?.[i];
+      if (!foot) continue;
+
+      let deep = 0;
+      for (const pt of soles[i]) {
+        _pt.copy(pt).applyMatrix4(foot.matrixWorld);
+        const need = this.ground(_pt.x, _pt.z) - _pt.y;
+        if (need > deep) deep = need;
+      }
+      if (deep <= 0) continue;
+
+      // The clip's contacts say LOADED, unlike the live gait's pose.contacts,
+      // which says swinging. jointSaturation() reads them the same way.
+      if (p.contacts && !p.contacts[i]) {
+        // A swing foot is corrected at its own knee, so the pelvis does not
+        // move and the model's foot clearance is left intact.
+        clearSwingFoot(r, i, `${SIDES[i]}_knee_joint`, deep, ground);
+      } else if (deep > lift) {
+        lift = deep;
+      }
+    }
+    if (lift > 0) r.root.position.y += lift;
+  }
+
   // -------------------------------------------------------------------------
   step(dt) {
     if (!this.ready) return;
+    if (this._terrainDirty) this.buildTerrain(this.env);
     const dur = this.players.A?.duration ?? this.players.B?.duration ?? 10;
     if (this.playing) this.t = (this.t + dt * this.rate) % dur;
 
@@ -471,7 +806,7 @@ export class Arena {
       if (!p || !r) continue;
       p.sample(this.t);
       r.root.position.copy(p.pos);
-      if (this.mode === 'lanes') {
+      if (this.mode === 'lanes' && this.paired) {
         const sgn = k === 'A' ? -1 : 1;
         r.root.position.addScaledVector(this.laneAxis, sgn * this.separation * 0.5);
       }
@@ -480,14 +815,16 @@ export class Arena {
         const j = r.joints[name];
         if (j) j.setJointValue(v);
       }
+      this._seat(r, p);
     }
 
     // Frame the pair where they ACTUALLY are, lane offsets included — aiming
     // at the un-offset clip positions leaves both robots off to one side.
-    const ra = this.robots.A?.root, rb = this.robots.B?.root;
+    const ra = this.players.A ? this.robots.A?.root : null;
+    const rb = this.players.B ? this.robots.B?.root : null;
     const mid = new Vector3();
     if (ra && rb) mid.copy(ra.position).add(rb.position).multiplyScalar(0.5);
-    else mid.copy((ra || rb).position);
+    else if (ra || rb) mid.copy((ra || rb).position);
     mid.y += 0.5;
     this.aim.lerp(mid, 1 - Math.exp(-dt * 3.5));
 
@@ -505,10 +842,53 @@ export class Arena {
       this.aim.x + Math.cos(this.orbit) * ce * d,
       this.aim.y + se * d + 0.4,
       this.aim.z + Math.sin(this.orbit) * ce * d);
+    this._clampIntoModule();
     this.camera.lookAt(this.aim);
     this.sun.target.position.copy(this.aim);
     this.sun.position.copy(sunDir(this.env.sunElev, this.env.sunAz))
       .multiplyScalar(50).add(this.aim);
+  }
+
+  /**
+   * Keep the camera inside the module.
+   *
+   * Every shot in this viewer is written for open ground, where standing a few
+   * metres to the side is exactly right. Indoors that is through a wall, and
+   * since the shell is closed what you get is the OUTSIDE of the module — which
+   * is the one thing an interior exists to prevent. So the solved position is
+   * pulled back into the cross-section, and the module's own radius is what
+   * decides how far it may go.
+   */
+  _clampIntoModule() {
+    const m = this.moduleBounds;
+    if (!m) return;
+    const c = this.camera.position;
+
+    // The distance the rig asked for. It is preserved, not discarded — the
+    // clamp decides WHERE the camera may stand, not how far away it is.
+    const want = c.distanceTo(this.aim);
+
+    // Into the free corridor, which is narrower than the shell: the rack faces
+    // down each side are what a camera actually collides with, and standing
+    // 1.68 m off the axis of a 4.27 m module put it inside one of them, which
+    // renders as a flat grey wall filling the frame.
+    const dy = c.y - m.centre.y, dz = c.z - m.centre.z;
+    const rad = Math.hypot(dy, dz);
+    const max = Math.max(0.25, m.free);
+    if (rad > max) {
+      const k = max / rad;
+      c.y = m.centre.y + dy * k;
+      c.z = m.centre.z + dz * k;
+    }
+
+    // Spend what is left along the tube, because that is the only axis with
+    // room in it. A module is 8.5 m long and 4.3 m across, so a shot that wants
+    // four metres of standoff can have it — just not sideways.
+    const off = Math.hypot(c.y - this.aim.y, c.z - this.aim.z);
+    const along = Math.sqrt(Math.max(want * want - off * off, 0.36));
+    const dir = Math.sign(c.x - this.aim.x) || -1;
+    const half = Math.max(0.3, m.len / 2 - 0.3);
+    c.x = clampTo(this.aim.x + dir * along, m.centre.x - half, m.centre.x + half);
   }
 
   render() {
@@ -524,10 +904,14 @@ export class Arena {
     r.getSize(_size);
     const w = _size.x, h = _size.y;
 
-    // Lanes: both robots on screen at once, one pass, nothing hidden.
-    if (this.mode === 'lanes') {
-      if (this.robots.A) this.robots.A.root.visible = true;
-      if (this.robots.B) this.robots.B.root.visible = true;
+    // Lanes: both robots on screen at once, one pass, nothing hidden. A robot
+    // with no clip this scene stays hidden — it has nothing to play, and left
+    // visible it holds its pose from the previous scene in the middle of the
+    // shot.
+    if (this.mode === 'lanes' || !this.paired) {
+      for (const k of CLIP_KEYS) {
+        if (this.robots[k]) this.robots[k].root.visible = !!this.players[k];
+      }
       r.setScissorTest(false);
       r.setViewport(0, 0, w, h);
       r.render(this.scene, this.camera);
@@ -552,7 +936,7 @@ export class Arena {
     r.render(this.scene, this.camera);
 
     r.setScissorTest(false);
-    if (this.robots.A) this.robots.A.root.visible = true;
+    if (this.robots.A) this.robots.A.root.visible = !!this.players.A;
   }
 
   /**
@@ -597,20 +981,84 @@ export class Arena {
            + `<div class="row"><span>sole into ground</span><b>${num(a.penetration * 1000, 1, ' mm')}</b></div>`;
     };
 
-    this.ui.querySelector('#titles').innerHTML = `
-      <div class="lbl a"><i></i>${clip('A').label || 'WorldVLA'}</div>
-      <div class="lbl b">${clip('B').label || 'PragyaSpace'}<i></i></div>`;
+    // One label for one robot. Leaving "PRAGYASPACE" in the corner of a scene
+    // that is not playing a PragyaSpace clip is simply a false caption.
+    this.ui.querySelector('#titles').innerHTML = this.players.B
+      ? `<div class="lbl a"><i></i>${clip('A').label || 'WorldVLA'}</div>
+         <div class="lbl b">${clip('B').label || 'PragyaSpace'}<i></i></div>`
+      : `<div class="lbl a"><i></i>${clip('A').label || ''}</div>`;
 
+    const gen = s.generated ? this._physics(s) : '';
     this.ui.querySelector('#panel').innerHTML = `
-      <h1>${s.name}</h1>
+      <h1>${this.place?.micro ? this.place.name : s.name}</h1>
       <div class="sub">${s.body} · g = ${s.g.toFixed(2)} m/s²${s.micro ? ' · free fall' : ''}</div>
-      <p class="blurb">${s.blurb || ''}</p>
-      <div class="cols">
+      <p class="blurb">${(s.generated ? clip('A').blurb : s.blurb) || s.blurb || ''}</p>
+      ${gen || `<div class="cols">
         <div class="col a"><h2>${clip('A').label || 'A'}</h2>${stat('A')}</div>
         <div class="col b"><h2>${clip('B').label || 'B'}</h2>${stat('B')}</div>
-      </div>
+      </div>`}
       ${s.micro ? '' : this._hardwareNote(s)}
+      ${this.place?.micro ? this._moduleNote() : ''}
       ${m ? this._provenance(m) : ''}`;
+  }
+
+  /**
+   * What gravity is doing to this motion, and what it would do elsewhere.
+   *
+   * The whole reason the generated motions exist. A packet walk looks nearly
+   * the same on the Moon and on Mars because it was authored once and
+   * re-planted twice; these were not authored at all. Given `g`, the URDF's own
+   * knee effort and velocity limits and the link geometry, src/sim/Ballistic.js
+   * works out how fast the machine can leave the ground and everything else
+   * follows — so the figures below are computed, and the Moon column is not a
+   * multiple anybody typed.
+   *
+   * The last row is the one that surprises people, and it is why the Apollo
+   * crews loped rather than ran. Forward acceleration comes from friction and
+   * friction comes from weight, so one sixth g does not make you fast — it
+   * makes you SLOW, and leaves you a two-and-a-half second flight phase to
+   * spend on getting nowhere in particular.
+   */
+  _physics(s) {
+    const p = s.physics;
+    if (!p) return '';
+    const here = s.body === 'Mars' ? 'Mars' : 'Moon';
+    const other = here === 'Moon' ? 'Mars' : 'Moon';
+    const og = here === 'Moon' ? 3.721 : 1.625;
+    // Same takeoff speed — that is the finding, not an assumption — so the
+    // other body's figures follow from its g alone.
+    const oApex = (p.v0 * p.v0) / (2 * og), oHang = (2 * p.v0) / og;
+    // Stance time is a property of the machine, not of the field, so it is the
+    // one thing that carries across unchanged — and recovering it from this
+    // body's duty is what lets the other body's duty be derived rather than
+    // guessed. duty = stance / (stance + flight).
+    const stance = (p.duty * p.hang) / Math.max(1 - p.duty, 1e-6);
+    const oDuty = stance / (stance + oHang);
+    const row = (label, a, b, unit, d = 2) =>
+      `<div class="row"><span>${label}</span><b>${a.toFixed(d)}${unit}</b>` +
+      `<u>${b.toFixed(d)}${unit}</u></div>`;
+    return `<div class="phys">
+      <div class="head"><span></span><b>${here.toUpperCase()}</b><u>${other.toUpperCase()}</u></div>
+      ${row('jump height', p.apex, oApex, ' m')}
+      ${row('time in the air', p.hang, oHang, ' s')}
+      ${row('fraction on the ground', p.duty, oDuty, '')}
+      ${row('top speed', p.speedCeiling, p.speedCeiling * (og / s.g), ' m/s')}
+      ${row('time to fall over', p.toppleTime, p.toppleTime * Math.sqrt(s.g / og), ' s')}
+      <p class="why">Take-off speed is <b>${p.v0.toFixed(2)} m/s</b> on both, because
+      what limits it is the knee's rated <b>${p.boundBy}</b> and not the field.
+      Everything above is the difference that one fact makes.</p>
+    </div>`;
+  }
+
+  /** The module's real size, which is the only thing that varies between them. */
+  _moduleNote() {
+    const m = this.place?.module;
+    if (!m) return '';
+    return `<div class="note"><b>${m.length.toFixed(2)} m long, ${m.diameter.toFixed(2)} m across.</b>
+      Published pressurised dimensions, drawn at scale and not fitted to the
+      clip — the point of an interior is to give the eye a known measurement to
+      put beside a 1.32 m robot. The scenario is the same in every module; how
+      much room there is to be wrong in is not.</div>`;
   }
 
   /**
@@ -654,9 +1102,18 @@ export class Arena {
       <b>Terrain</b> ${m.citation}<br>
       Source resolution ${px(native)}${m.native_mpp && m.mpp && m.mpp < m.native_mpp
         ? ` · resampled to a ${px(m.mpp)} grid` : ''}<br>
-      ${m.span_m} m patch · lat ${Number(m.lat).toFixed(4)}, lon ${Number(m.lon).toFixed(4)}<br>
+      ${this._extent(m)} · lat ${Number(m.lat).toFixed(4)}, lon ${Number(m.lon).toFixed(4)}<br>
       ${this._fidelity(n)}
       ${m.resolution_note ? `<em>${m.resolution_note}</em>` : ''}</div>`;
+  }
+
+  /** The patch's size on the ground, whichever grid it was fetched on. */
+  _extent(m) {
+    if (m.span_x_m && m.span_y_m) {
+      const km = (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} km` : `${Math.round(v)} m`);
+      return `${km(m.span_x_m)} x ${km(m.span_y_m)} patch, long axis along the traverse`;
+    }
+    return `${m.span_m} m patch`;
   }
 
   /**
@@ -691,46 +1148,141 @@ export class Arena {
   }
 }
 
-/** Boot: wire the DOM, load the first scene, run. */
+/**
+ * Boot: wire the DOM, build the picker, load the first place, run.
+ *
+ * The picker is three levels, because the question has three parts: WHICH BODY
+ * (which decides the gravity), WHICH PLACE on it (which decides the ground),
+ * and WHICH MOTION (which decides what the robot is trying to do there). The
+ * old picker was a single flat list of fourteen scene ids, which conflated all
+ * three and could not have held forty places.
+ */
 export async function startArena(canvas, ui) {
   const arena = new Arena(canvas, ui);
-  const ids = await discoverScenes();
-  if (!ids.length) {
+  const index = await loadPlaces();
+  if (!index?.places?.length) {
     ui.querySelector('#panel').innerHTML =
-      '<h1>No scenes built</h1><p class="blurb">Run <code>node tools/build_scene.mjs &lt;id&gt;</code> first.</p>';
+      '<h1>Nothing built</h1><p class="blurb">Run <code>.venv/bin/python pipeline/dem.py site</code>, '
+      + 'then <code>node tools/build_all.mjs &amp;&amp; node tools/build_motions.mjs &amp;&amp; '
+      + 'node tools/build_index.mjs</code>.</p>';
     return arena;
   }
 
-  const picker = ui.querySelector('#scenes');
-  picker.innerHTML = ids.map((id, i) =>
-    `<button data-id="${id}"${i === 0 ? ' class="on"' : ''}>${id.replace(/_/g, ' ')}</button>`).join('');
-  picker.addEventListener('click', async (e) => {
+  const tabsEl = ui.querySelector('#tabs');
+  const placesEl = ui.querySelector('#places');
+  const motionsEl = ui.querySelector('#motions');
+
+  const bodies = index.bodies.filter((b) => index.places.some((p) => p.body === b));
+  let body = bodies[0];
+  let place = null;
+  let motion = 'compare';
+
+  const placesOf = (b) => index.places.filter((p) => p.body === b);
+
+  /**
+   * What can be played at this place.
+   *
+   * A module offers the microgravity scenarios and nothing else — there is no
+   * ground, so there is no gait and a hop has no meaning. A surface place
+   * offers the packet comparison where a packet exists, plus every generated
+   * motion the build produced for it.
+   */
+  const motionsOf = (p) => {
+    if (!p) return [];
+    if (p.micro) return index.microScenes.map((m) => ({ id: m.id, label: m.name.split(' — ')[0], title: m.blurb }));
+    const out = [];
+    if (p.compare) {
+      out.push({ id: 'compare', label: 'A / B PACKETS',
+                 title: 'WorldVLA against PragyaSpace, both walking the same authored traverse.' });
+    }
+    for (const m of p.motions) {
+      out.push({ id: m, label: MOTION_LABEL[m] || m.toUpperCase(),
+                 title: MOTION_TITLE[m] || '' });
+    }
+    return out;
+  };
+
+  const renderTabs = () => {
+    tabsEl.innerHTML = bodies.map((b) =>
+      `<button data-body="${b}" class="${b === body ? 'on' : ''}">${b.toUpperCase()}`
+      + `<i>${placesOf(b).length}</i></button>`).join('');
+  };
+
+  const renderPlaces = () => {
+    placesEl.innerHTML = placesOf(body).map((p) => {
+      // Say how much of the ground under a place was actually measured, right
+      // on the button — the alternative is a picker where a 1 m/px HiRISE site
+      // and a 200 m/px global-blend site look equally authoritative.
+      const t = p.terrain;
+      const tag = p.micro ? `${p.module.length.toFixed(1)} m`
+        : t ? `${Math.round(t.posts)} posts` : '';
+      return `<button data-id="${p.id}" class="${p.id === place?.id ? 'on' : ''}"`
+        + ` title="${(p.name || '').replace(/"/g, '&quot;')}">${p.place}<i>${tag}</i></button>`;
+    }).join('');
+  };
+
+  const renderMotions = () => {
+    const list = motionsOf(place);
+    motionsEl.innerHTML = list.map((m) =>
+      `<button data-motion="${m.id}" class="${m.id === motion ? 'on' : ''}"`
+      + ` title="${m.title.replace(/"/g, '&quot;')}">${m.label}</button>`).join('');
+    motionsEl.style.display = list.length > 1 ? '' : 'none';
+  };
+
+  const show = async (p, m) => {
+    place = p;
+    const avail = motionsOf(p).map((x) => x.id);
+    motion = avail.includes(m) ? m : avail[0];
+    renderTabs(); renderPlaces(); renderMotions();
+    await arena.load(place, motion);
+    applyMode();
+  };
+
+  tabsEl.addEventListener('click', async (e) => {
     const b = e.target.closest('button');
     if (!b) return;
-    picker.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
-    await arena.load(b.dataset.id);
+    body = b.dataset.body;
+    // Keep the motion across a body change when the new place can play it, so
+    // clicking MOON then MARS while watching a bound compares the same thing.
+    await show(placesOf(body)[0], motion);
+  });
+  placesEl.addEventListener('click', async (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    await show(index.places.find((p) => p.id === b.dataset.id), motion);
+  });
+  motionsEl.addEventListener('click', async (e) => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    await show(place, b.dataset.motion);
   });
 
-  // Mode toggle: two robots side by side, or superimposed under a wipe.
   const modeBtn = ui.querySelector('#mode');
   const seam = ui.querySelector('#seam');
   const sepWrap = ui.querySelector('#sepwrap');
   const applyMode = () => {
+    // With a single generated motion there is no pair to separate or wipe
+    // between, so the controls that only mean something for a comparison are
+    // taken away rather than left to do nothing.
+    const pair = !!(arena.players.A && arena.players.B);
+    modeBtn.style.display = pair ? '' : 'none';
     const lanes = arena.mode === 'lanes';
     modeBtn.textContent = lanes ? 'SIDE BY SIDE' : 'OVERLAY + WIPE';
     modeBtn.title = lanes
       ? 'Both robots, in separate lanes. Click for superimposed pose comparison.'
       : 'Superimposed, revealed by the wipe. Click to separate them.';
-    seam.style.display = lanes ? 'none' : '';
-    sepWrap.style.display = lanes ? '' : 'none';
+    seam.style.display = (pair && !lanes) ? '' : 'none';
+    sepWrap.style.display = (pair && lanes) ? '' : 'none';
   };
   modeBtn.addEventListener('click', () => {
     arena.mode = arena.mode === 'lanes' ? 'wipe' : 'lanes';
     applyMode();
+    arena._updateLanes();
   });
   ui.querySelector('#sep').addEventListener('input', (e) => {
     arena.separation = Number(e.target.value);
     ui.querySelector('#sepval').textContent = `${arena.separation.toFixed(1)} m`;
+    arena._updateLanes();
   });
   applyMode();
 
@@ -783,7 +1335,7 @@ export async function startArena(canvas, ui) {
     if (e.key === 'ArrowLeft') arena.t = Math.max(0, arena.t - 1 / 30);
   });
 
-  await arena.load(ids[0]);
+  await show(placesOf(body)[0], 'compare');
 
   const scrub = ui.querySelector('#scrub');
   let last = performance.now();

@@ -209,11 +209,19 @@ export class SiteField {
    */
   constructor(dem, meta, profile) {
     this.dem = dem;
-    this.n = meta.size_px;
+    // Rectangular, long axis along the traverse — see pipeline/dem.py. The
+    // square `size_px` is still read as a fallback, so a patch fetched before
+    // the grid became 2:1 still loads.
+    this.nx = meta.size_px_x ?? meta.size_px;
+    this.nz = meta.size_px_y ?? meta.size_px;
     this.mpp = meta.mpp;
     this.meta = meta;
     this.p = profile;
-    this.half = (this.n * this.mpp) / 2;
+    this.halfX = (this.nx * this.mpp) / 2;
+    this.halfZ = (this.nz * this.mpp) / 2;
+    // The largest square centred on the patch that is entirely inside it —
+    // what a caller wanting one number for "how far the ground reaches" needs.
+    this.half = Math.min(this.halfX, this.halfZ);
     // Detrend so the patch centre is the origin and the mean plane is level
     // enough that the scene camera and the sun rig behave predictably. The
     // real slope is kept — only the constant offset is removed.
@@ -222,17 +230,18 @@ export class SiteField {
 
   /** Bilinear DEM sample. x,z in metres from patch centre; +z south. */
   sampleDEM(x, z) {
-    const n = this.n;
+    const nx = this.nx, nz = this.nz;
     // +z south, DEM rows run north→south, so row index grows with z.
-    const u = (x + this.half) / this.mpp;
-    const v = (z + this.half) / this.mpp;
+    const u = (x + this.halfX) / this.mpp;
+    const v = (z + this.halfZ) / this.mpp;
     const i0 = Math.floor(u), j0 = Math.floor(v);
     const fx = u - i0, fz = v - j0;
-    const cl = (k) => Math.min(n - 1, Math.max(0, k));
-    const i1 = cl(i0 + 1), j1 = cl(j0 + 1), ii = cl(i0), jj = cl(j0);
+    const cx = (k) => Math.min(nx - 1, Math.max(0, k));
+    const cz = (k) => Math.min(nz - 1, Math.max(0, k));
+    const i1 = cx(i0 + 1), j1 = cz(j0 + 1), ii = cx(i0), jj = cz(j0);
     const d = this.dem;
-    const a = d[jj * n + ii], b = d[jj * n + i1];
-    const c = d[j1 * n + ii], e = d[j1 * n + i1];
+    const a = d[jj * nx + ii], b = d[jj * nx + i1];
+    const c = d[j1 * nx + ii], e = d[j1 * nx + i1];
     return (a + (b - a) * fx) + ((c + (e - c) * fx) - (a + (b - a) * fx)) * fz;
   }
 

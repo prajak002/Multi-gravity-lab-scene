@@ -164,7 +164,9 @@ if (process.argv[2]) {
   }
   console.log(`\n${out.name}   (${out.body}, g=${out.g} m/s^2)`);
   console.log(`terrain  ${out.terrain.meta.citation}`);
-  console.log(`         ${out.terrain.meta.span_m} m patch at ${out.terrain.meta.mpp} m/px, `
+  const _m = out.terrain.meta;
+  const _span = _m.span_x_m ? `${Math.round(_m.span_x_m)} x ${Math.round(_m.span_y_m)} m` : `${_m.span_m} m`;
+  console.log(`         ${_span} patch at ${out.terrain.meta.mpp} m/px, `
             + `lat ${out.terrain.meta.lat} lon ${out.terrain.meta.lon}`);
   console.log(`heading  ${(out.terrain.heading * 180 / Math.PI).toFixed(1)} deg\n`);
   for (const r of report) {

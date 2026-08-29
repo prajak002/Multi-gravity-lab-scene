@@ -82,42 +82,88 @@ async function fetchJSON(url) {
 export async function loadScene(id) {
   const scene = _cache.get(id) ?? await fetchJSON(`scenes/${id}.json`);
   _cache.set(id, scene);
-  let field = null;
-  const demName = scene.terrain?.dem;
-  if (demName) {
-    // The .f32 is a raw row-major Float32 heightfield; its sidecar carries the
-    // pixel scale and the provenance of the observation it came from.
-    const meta = scene.terrain.meta ?? await fetchJSON(`dem/${demName}.json`);
-    const buf = await (await fetch(`dem/${demName}.f32`)).arrayBuffer();
-    field = new SiteField(new Float32Array(buf), meta, profileFor(scene));
-  }
-  return { scene, field };
+  return { scene, field: await fieldFor(scene) };
 }
 
 /**
- * Which scenes actually exist, so the picker never offers a dead entry.
+ * The SiteField a scene stands on.
  *
- * A HEAD request is not enough. Vite's dev server answers any unmatched path
- * with index.html and a 200, so probing by status offered all fourteen scenes
- * when only three were built and the missing ones failed later with
- * "Unexpected token '<'". The only reliable test is to fetch it and confirm it
- * parses as a scene.
- *
- * Results are cached, so the picker's probe is also the load of the first
- * scene rather than a second round trip.
+ * Cached by patch and profile, because the arena now switches between forty
+ * places and rebuilding a field means re-reading a two-megabyte heightfield.
+ * The cache key includes the profile: the same DEM read with a different
+ * micro-relief layer is a different surface, and handing back the wrong one
+ * would put the feet through ground that was solved against the other.
  */
-export async function discoverScenes() {
-  await Promise.all(SCENE_IDS.map(async (id) => {
-    if (_cache.has(id)) return;
-    try {
-      const r = await fetch(`scenes/${id}.json`);
-      if (!r.ok) return;
-      if (!/json/i.test(r.headers.get('content-type') || '')) return;
-      const j = await r.json();
-      if (j && j.clips && (j.clips.A || j.clips.B)) _cache.set(id, j);
-    } catch { /* not built yet, or served as the SPA fallback */ }
-  }));
-  return SCENE_IDS.filter((id) => _cache.has(id));
+const _fields = new Map();
+async function fieldFor(scene) {
+  const demName = scene.terrain?.dem;
+  if (!demName) return null;
+  const profile = scene.terrain?.profile ?? '';
+  const key = `${demName}|${profile}`;
+  if (_fields.has(key)) return _fields.get(key);
+  // The .f32 is a raw row-major Float32 heightfield; its sidecar carries the
+  // pixel scale and the provenance of the observation it came from.
+  const meta = scene.terrain.meta ?? await fetchJSON(`dem/${demName}.json`);
+  const buf = await (await fetch(`dem/${demName}.f32`)).arrayBuffer();
+  const field = new SiteField(new Float32Array(buf), meta, profileFor(scene));
+  if (!scene.terrain.meta) scene.terrain.meta = meta;
+  _fields.set(key, field);
+  return field;
+}
+
+/**
+ * One place, playing one motion.
+ *
+ * `motion` is 'compare' for the two packet runs the arena was built around, or
+ * the id of a generated motion. Both come back in the same shape.
+ */
+export async function loadPlace(id, motion = 'compare') {
+  if (!motion || motion === 'compare') return loadScene(id);
+  const scene = await loadMotionScene(id, motion);
+  return { scene, field: await fieldFor(scene) };
+}
+
+/**
+ * The catalogue: every place the build produced, grouped by body.
+ *
+ * One request, written by tools/build_index.mjs. The old discoverScenes()
+ * probed fourteen candidate URLs and kept whatever parsed, which was a sound
+ * answer to Vite's dev server returning index.html with a 200 for any missing
+ * path — but it does not scale to forty places, and it cannot tell the picker
+ * which body a place is on or what motions exist for it. A manifest can, and a
+ * place whose terrain was never fetched simply is not in it.
+ */
+let _places = null;
+export async function loadPlaces() {
+  if (_places) return _places;
+  _places = await fetchJSON('places.json');
+  return _places;
+}
+
+/**
+ * A generated-motion clip, in the same shape a packet scene has.
+ *
+ * The viewer should not care which it is playing — one is retargeted from a
+ * packet and one is generated from the field strength, but both arrive as
+ * joints, root, quat and contacts, and both were solved against the same
+ * SiteField. So this normalises to the scene shape and the arena has one code
+ * path.
+ */
+export async function loadMotionScene(id, motion) {
+  const key = `motion:${id}`;
+  const doc = _cache.get(key) ?? await fetchJSON(`motions_baked/${id}.json`);
+  _cache.set(key, doc);
+  const clip = doc.motions?.[motion];
+  if (!clip) throw new Error(`${id} has no ${motion} motion`);
+  return {
+    id, name: doc.name, body: doc.body, g: doc.g, blurb: doc.blurb,
+    terrain: doc.terrain,
+    // ONE robot. A generated motion is not a comparison between two models —
+    // it is a comparison between two GRAVITIES, and the other one is not on
+    // this terrain. The readout carries that instead.
+    clips: { A: clip },
+    motion, physics: clip.physics, generated: true,
+  };
 }
 
 /**

@@ -702,10 +702,25 @@ export function retarget(rows, field, opt) {
           // 500. Every one of the remaining over-limit spikes was a touchdown
           // or a liftoff, not the middle of a swing.
           //
-          // Weighting the floor by sin(pi*u) makes it zero at both ends and
-          // full in the middle, so the foot still clears whatever sits between
-          // the footholds but arrives at each one continuously.
-          const blend = Math.sin(Math.PI * u);
+          // Weighting the floor to zero at both ends and full in the middle
+          // makes the foot clear whatever sits between the footholds while
+          // still arriving at each one continuously.
+          //
+          // sin(pi*u) does that, and was what this used, but it spends the
+          // whole swing ramping: at 15 % in it is only 0.45, so through the
+          // first and last sixth of every step the floor is at less than half
+          // strength and the foot can be well under a rising surface. Measured
+          // in the viewer against the ground it is drawn on, that left a swing
+          // foot 63 mm inside the slope on Ganges Chasma and 36 mm on Jezero.
+          //
+          // A trapezoid holds the floor at FULL strength across the middle
+          // 70 % of the swing and ramps over the outer 15 % at each end. The
+          // ends are what the rate budget cares about — that is where the
+          // touchdown slew came from — and they are still C1 into the
+          // foothold, just over a shorter, deliberately chosen distance
+          // instead of over the entire step.
+          const RAMP = 0.15;
+          const blend = smooth(Math.min(1, u / RAMP)) * smooth(Math.min(1, (1 - u) / RAMP));
           const floor = base + Math.max(0, along + 0.035 - base) * blend;
           const z = Math.max(base + arc, floor + (arc * 0.55 + 0.012) * blend);
           // toe up on the way out, level on the way in, so the heel strikes first

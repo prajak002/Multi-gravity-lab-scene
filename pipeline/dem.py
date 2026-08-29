@@ -92,8 +92,8 @@ SOURCES = {
 }
 
 GDAL = dict(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", VSI_CACHE="TRUE",
-            VSI_CACHE_SIZE="33554432", GDAL_HTTP_MAX_RETRY="5",
-            GDAL_HTTP_RETRY_DELAY="2", CPL_VSIL_CURL_CHUNK_SIZE="1048576",
+            VSI_CACHE_SIZE="268435456", GDAL_HTTP_MAX_RETRY="5",
+            GDAL_HTTP_RETRY_DELAY="2", GDAL_CACHEMAX=512, CPL_VSIL_CURL_CHUNK_SIZE="4194304",
             CPL_VSIL_CURL_ALLOWED_EXTENSIONS=".tif,.img,.lbl")
 
 
@@ -109,66 +109,208 @@ GDAL = dict(GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR", VSI_CACHE="TRUE",
 SITES = {
     # ---- Moon ----
     "moon_shiv_shakti": dict(
-        source="lola_60s_60m", lat=-69.373, lon=32.319, want_slope=4.0, search_km=9,
+        source="lola_60s_60m", lat=-69.373, lon=32.319, want_slope=4.0, traverse="upslope", search_km=9,
         name="Shiv Shakti Point — Chandrayaan-3 landing site",
         note="Uneven mare-highland regolith; the traverse is over undulating "
              "regolith rather than a named grade."),
     "moon_shackleton_rim": dict(
-        source="lola_875s_5m", lat=-89.68, lon=129.2, want_slope=14.0, search_km=6,
+        source="lola_875s_5m", lat=-89.68, lon=129.2, want_slope=14.0, traverse="upslope", search_km=6,
         name="Shackleton Crater rim — lunar south pole",
         note="Steep rim ascent. Best public lunar topography anywhere: 5 m/px."),
     "moon_mare_tranquillitatis": dict(
-        source="lolakaguya_59m", lat=8.5, lon=31.4, want_slope=0.6, search_km=20,
+        source="lolakaguya_59m", lat=8.5, lon=31.4, want_slope=0.6, traverse="contour", search_km=20,
         name="Mare Tranquillitatis — flat basalt plain",
         note="Deliberately the flattest window found; the scenario is a cruise."),
     "moon_aristarchus": dict(
-        source="lolakaguya_59m", lat=23.73, lon=-47.49, want_slope=7.0, search_km=16,
+        source="lolakaguya_59m", lat=23.73, lon=-47.49, want_slope=7.0, traverse="contour", search_km=16,
         name="Aristarchus Plateau — blocky ejecta and scarps",
         note="Obstacle geometry: high-step, side-step, pivot, edge contouring."),
     "moon_tycho_flank": dict(
-        source="lolakaguya_59m", lat=-43.31, lon=-11.36, want_slope=13.0, search_km=18,
+        source="lolakaguya_59m", lat=-43.31, lon=-11.36, want_slope=13.0, traverse="downslope", search_km=18,
         name="Tycho crater flank — steep descent",
         note="Steep downhill; the scenario is braking, so the patch is chosen "
              "for grade and the traverse runs down the fall line."),
     "moon_schrodinger_basin": dict(
-        source="lola_60s_60m", lat=-74.9, lon=133.5, want_slope=6.5, search_km=25,
+        source="lola_60s_60m", lat=-74.9, lon=133.5, want_slope=6.5, traverse="upslope", search_km=25,
         name="Schrödinger Basin — mixed terrain",
         note="Cruise, rough walking and climbing in one traverse."),
 
     # ---- Mars ----
     "mars_jezero_delta": dict(
-        source="hrsc_mola_200m", lat=18.47, lon=77.38, want_slope=5.0, search_km=14,
+        source="hrsc_mola_200m", lat=18.47, lon=77.38, want_slope=5.0, traverse="contour", search_km=14,
         name="Jezero Crater western delta",
         note="Obstacle slalom across the delta front."),
     "mars_gale_crater": dict(
-        source="gale_1m", lat=-4.74723, lon=137.3785, want_slope=9.0, search_km=0.4,
+        source="gale_1m", lat=-4.74723, lon=137.3785, want_slope=9.0, traverse="upslope", search_km=0.4,
         name="Gale Crater — lower Mount Sharp flank",
         note="Rocky uphill traction. 1 m/px HiRISE, the finest Mars DEM there is."),
     "mars_olympia_undae": dict(
-        source="hrsc_mola_200m", lat=81.0, lon=180.0, want_slope=1.2, search_km=30,
+        source="hrsc_mola_200m", lat=81.0, lon=180.0, want_slope=1.2, traverse="contour", search_km=30,
         name="Olympia Undae — north polar dune sea",
         note="Deep sand. The DEM gives the dune field's regional grade; the "
              "ripple geometry the foot sinks into is the synthetic layer."),
     "mars_cerberus_fossae": dict(
-        source="hrsc_mola_200m", lat=11.28, lon=166.37, want_slope=3.0, search_km=20,
+        source="hrsc_mola_200m", lat=11.28, lon=166.37, want_slope=3.0, traverse="contour", search_km=20,
         name="Cerberus Fossae — fissure system",
         note="Gap crossing. The fissure itself is narrower than a 200 m pixel, "
              "so the gap is authored; the DEM supplies the plain it cuts."),
     "mars_medusae_fossae": dict(
-        source="hrsc_mola_200m", lat=-2.5, lon=197.0, want_slope=6.0, search_km=25,
+        source="hrsc_mola_200m", lat=-2.5, lon=197.0, want_slope=6.0, traverse="contour", search_km=25,
         name="Medusae Fossae Formation — yardang field",
         note="Narrow threading between wind-carved ridges."),
     "mars_ganges_chasma": dict(
-        source="hrsc_mola_200m", lat=-7.5, lon=311.5, want_slope=16.0, search_km=30,
+        source="hrsc_mola_200m", lat=-7.5, lon=311.5, want_slope=16.0, traverse="downslope", search_km=30,
         name="Ganges Chasma — Valles Marineris wall",
         note="Steep descent by switchback. Chosen for the steepest wall "
              "section the scan can find."),
+
+    # ---- Moon: the places a mission actually went, or is going -------------
+    # Landing sites are the published coordinates of the spacecraft; the scan
+    # still searches around them for a window with the grade each scenario
+    # needs, so "Apollo 15" means the Hadley terrain, not a claim about the
+    # exact square metre of the LM footpads.
+    "moon_apollo11_tranquility": dict(
+        source="lolakaguya_59m", lat=0.674, lon=23.473, want_slope=0.8,
+        traverse="contour", search_km=12,
+        name="Apollo 11 — Tranquility Base",
+        note="The first walk. Flat mare regolith, which is why it was chosen: "
+             "the scenario is a cruise with nothing to negotiate."),
+    "moon_apollo15_hadley": dict(
+        source="lolakaguya_59m", lat=26.132, lon=3.634, want_slope=9.0,
+        traverse="upslope", search_km=16,
+        name="Apollo 15 — Hadley Rille and the Apennine Front",
+        note="The first rover traverse, up the Apennine Front. Slope walking "
+             "beside a 300 m sinuous rille."),
+    "moon_apollo17_taurus_littrow": dict(
+        source="lolakaguya_59m", lat=20.191, lon=30.772, want_slope=7.5,
+        traverse="upslope", search_km=16,
+        name="Apollo 17 — Taurus-Littrow valley",
+        note="The last walk, and the longest. A deep valley between massifs, "
+             "with the light-mantle avalanche deposit on its floor."),
+    "moon_copernicus": dict(
+        source="lolakaguya_59m", lat=9.62, lon=-20.08, want_slope=17.0,
+        traverse="downslope", search_km=30,
+        name="Copernicus Crater — terraced wall",
+        note="A 93 km young impact crater. The terraced inner wall is the "
+             "steepest sustained ground in this set."),
+    "moon_marius_hills": dict(
+        source="lolakaguya_59m", lat=13.6, lon=-55.0, want_slope=6.0,
+        traverse="upslope", search_km=22,
+        name="Marius Hills — volcanic domes and a lava-tube skylight",
+        note="Volcanic dome field in Oceanus Procellarum, and the most "
+             "discussed lava-tube skylight on the Moon."),
+    "moon_reiner_gamma": dict(
+        source="lolakaguya_59m", lat=7.4, lon=-59.0, want_slope=0.9,
+        traverse="contour", search_km=20,
+        name="Reiner Gamma — magnetic swirl",
+        note="A magnetic anomaly with almost no topographic expression at all: "
+             "the albedo swirl is invisible to a DEM, so what a walk here tests "
+             "is flat-ground efficiency."),
+    "moon_plato": dict(
+        source="lolakaguya_59m", lat=51.6, lon=-9.3, want_slope=1.0,
+        traverse="contour", search_km=25,
+        name="Plato Crater — flooded floor",
+        note="A lava-flooded crater floor ringed by massifs; one of the "
+             "smoothest large surfaces on the nearside."),
+    "moon_tsiolkovskiy": dict(
+        source="lolakaguya_59m", lat=-21.2, lon=128.9, want_slope=11.0,
+        traverse="downslope", search_km=28,
+        name="Tsiolkovskiy Crater — farside central peak",
+        note="The farside's most prominent dark-floored crater. Steep ground "
+             "off the central peak complex."),
+    "moon_malapert_massif": dict(
+        source="lola_85s_10m", lat=-86.0, lon=2.7, want_slope=12.0,
+        traverse="upslope", search_km=12,
+        name="Malapert Massif — Artemis candidate",
+        note="A south-polar massif with near-permanent Earth line of sight, "
+             "which is what makes it a landing candidate. Steep and lit at a "
+             "grazing angle."),
+    "moon_de_gerlache_rim": dict(
+        source="lola_875s_5m", lat=-88.5, lon=-87.1, want_slope=10.0,
+        traverse="upslope", search_km=8,
+        name="de Gerlache Crater rim — Artemis candidate",
+        note="Polar rim beside permanently shadowed floor, at the finest "
+             "lunar topography published anywhere: 5 m/px."),
+
+    # ---- Mars: the places a mission actually went ---------------------------
+    "mars_olympus_mons": dict(
+        source="hrsc_mola_200m", lat=18.65, lon=-133.8, want_slope=5.0,
+        traverse="upslope", search_km=60,
+        name="Olympus Mons — the flank",
+        note="The largest volcano in the solar system. The flank grade is "
+             "gentle and utterly relentless — 5 degrees for hundreds of km."),
+    "mars_melas_chasma": dict(
+        source="hrsc_mola_200m", lat=-9.8, lon=-76.5, want_slope=20.0,
+        traverse="downslope", search_km=40,
+        name="Melas Chasma — the deepest wall of Valles Marineris",
+        note="The steepest descent available on Mars: 8 km of relief in the "
+             "central Valles Marineris trough."),
+    "mars_elysium_insight": dict(
+        source="hrsc_mola_200m", lat=4.502, lon=135.623, want_slope=0.6,
+        traverse="contour", search_km=25,
+        name="Elysium Planitia — InSight landing site",
+        note="Chosen by NASA precisely for being boring: the flattest, safest "
+             "plain they could find. Here that makes it the control."),
+    "mars_meridiani_opportunity": dict(
+        source="hrsc_mola_200m", lat=-1.95, lon=-5.53, want_slope=0.8,
+        traverse="contour", search_km=25,
+        name="Meridiani Planum — Opportunity landing site",
+        note="Haematite plain. Flat at the DEM's scale, and covered in the "
+             "ripple field that the synthetic layer supplies."),
+    "mars_gusev_spirit": dict(
+        source="hrsc_mola_200m", lat=-14.57, lon=175.47, want_slope=6.0,
+        traverse="upslope", search_km=25,
+        name="Gusev Crater — Spirit and the Columbia Hills",
+        note="Spirit climbed Husband Hill here, which remains the steepest "
+             "sustained ascent any Mars rover has driven."),
+    "mars_utopia_zhurong": dict(
+        source="hrsc_mola_200m", lat=25.066, lon=109.926, want_slope=0.7,
+        traverse="contour", search_km=25,
+        name="Utopia Planitia — Zhurong landing site",
+        note="Northern lowland plain, mantled and very flat."),
+    "mars_chryse_viking1": dict(
+        source="hrsc_mola_200m", lat=22.48, lon=-47.97, want_slope=1.5,
+        traverse="contour", search_km=25,
+        name="Chryse Planitia — Viking 1 landing site",
+        note="The first successful Mars landing. Outflow-channel plain, "
+             "boulder-strewn at the scale a foot cares about."),
+    "mars_hellas_basin": dict(
+        source="hrsc_mola_200m", lat=-42.4, lon=70.5, want_slope=2.5,
+        traverse="downslope", search_km=60,
+        name="Hellas Planitia — the deepest floor on Mars",
+        note="Seven kilometres below datum, where the atmosphere is thickest. "
+             "The floor grade is shallow but never stops."),
+    "mars_arsia_mons": dict(
+        source="hrsc_mola_200m", lat=-8.35, lon=-120.09, want_slope=8.0,
+        traverse="upslope", search_km=40,
+        name="Arsia Mons — southern Tharsis Montes",
+        note="Volcanic flank with collapse pits; the steepest of the three "
+             "Tharsis Montes at this scale."),
+    "mars_nili_fossae": dict(
+        source="hrsc_mola_200m", lat=22.0, lon=77.0, want_slope=10.0,
+        traverse="contour", search_km=30,
+        name="Nili Fossae — graben system",
+        note="Concentric graben northeast of Isidis, and the strongest "
+             "clay-mineral exposure on the planet. Contour walking between "
+             "fault scarps."),
 }
 
 
 # ---------------------------------------------------------------------------
+# One open dataset per product, reused for every read.
+#
+# Each probe used to call rasterio.open() on the remote product again, which
+# threw away the HTTP connection and GDAL's block cache between probes — and
+# the probes of one site are all within a few kilometres of each other, so they
+# want the same blocks. Scanning Shackleton with eight probes took 3 min 52 s
+# that way. Holding the dataset open turns almost all of that into cache hits.
+_OPEN = {}
+
+
 def open_src(key):
-    """Open a product and return (dataset, geographic CRS, scale, offset)."""
+    """Open a product and return (dataset, geographic CRS, scale)."""
+    if key in _OPEN:
+        return _OPEN[key]
     src = SOURCES[key]
     ds = rasterio.open("/vsicurl/" + src["url"])
     proj = CRS.from_wkt(ds.crs.to_wkt())
@@ -178,7 +320,8 @@ def open_src(key):
     # does not apply them on read. The LOLA offset is the lunar radius, so
     # subtracting it is what turns a radius into an elevation.
     scale = ds.scales[0] if ds.scales else 1.0
-    return ds, geo, scale
+    _OPEN[key] = (ds, geo, scale)
+    return _OPEN[key]
 
 
 def local_crs(lat, lon, radius):
@@ -187,27 +330,49 @@ def local_crs(lat, lon, radius):
         f"+proj=aeqd +lat_0={lat} +lon_0={lon} +R={radius} +units=m +no_defs")
 
 
-def read_patch(key, lat, lon, size_px, mpp):
+def read_patch(key, lat, lon, w_px, h_px, mpp, bearing=90.0):
     """
-    A square, isotropic, metric heightfield centred on (lat, lon).
+    A rectangular, isotropic, metric heightfield centred on (lat, lon).
 
     The warp is what makes the grid metric; `mpp` is the grid it is resampled
     onto and is chosen per site, never finer than a fraction of the product's
     own resolution — resampling cannot invent detail and pretending otherwise
     is how a 200 m/px product ends up labelled as centimetre terrain.
+
+    RECTANGULAR, AND TURNED TO FACE THE WALK
+
+    A traverse is a line, not a disc: the robot spends its whole clip going one
+    way and a few metres either side of it. A square patch therefore buys most
+    of its pixels for ground nobody visits, and the arena paid for that twice —
+    once in download and once in the cap that kept the square small enough to
+    be affordable, which held Gale Crater to a 128 m window of the best DEM on
+    Mars.
+
+    So the grid is 2:1 and its long axis is turned to point along the
+    scenario's traverse. `bearing` is the compass bearing grid +x should face,
+    and the rotation is applied in the azimuthal-equidistant frame, which is
+    true to scale in every direction through the site — so turning the grid
+    costs no fidelity at all, unlike rotating a simple-cylindrical window.
+
+    Everything downstream keeps working in GRID coordinates, where +x is still
+    the direction the traverse runs; `grid_bearing_deg` in the sidecar is what
+    ties that back to the compass.
     """
     src = SOURCES[key]
     ds, geo, scale = open_src(key)
     dst = local_crs(lat, lon, src["radius"])
-    half = size_px * mpp / 2.0
-    # Site sits at the centre of the output grid, which spans +-half metres.
-    transform = rasterio.Affine(mpp, 0, -half, 0, -mpp, half)
+    halfw, halfh = w_px * mpp / 2.0, h_px * mpp / 2.0
+    # North-up grid: +x east, rows running north to south. Site at the centre.
+    base = rasterio.Affine(mpp, 0, -halfw, 0, -mpp, halfh)
+    # Turn it so grid +x faces `bearing`. A compass bearing is measured
+    # clockwise from north; Affine.rotation is counter-clockwise from +x
+    # (east), and east is bearing 90 — hence 90 - bearing.
+    transform = rasterio.Affine.rotation(90.0 - bearing) * base
     with WarpedVRT(ds, crs=dst.to_wkt(), transform=transform,
-                   width=size_px, height=size_px,
+                   width=w_px, height=h_px,
                    resampling=rasterio.enums.Resampling.bilinear,
                    src_nodata=ds.nodata, nodata=ds.nodata) as vrt:
         a = vrt.read(1).astype("float64")
-    ds.close()
     if ds.nodata is not None:
         a = np.where(a == ds.nodata, np.nan, a)
     a = a * scale
@@ -236,13 +401,17 @@ def terrain_stats(a, mpp):
         # (the affine flips the row direction), so this is a compass-consistent
         # downslope direction the scene builder can align a traverse against.
         plane_aspect=float(math.degrees(math.atan2(-coef[1], coef[0]))),
+        # Compass bearing of UPHILL, in the grid the patch was read on. This is
+        # what decides which way a rectangular patch is turned: a scenario that
+        # says "upslope" wants its long axis pointing here.
+        uphill_bearing=float(math.degrees(math.atan2(coef[0], coef[1]))),
         roughness_rms=float(np.sqrt(np.nanmean(resid ** 2))),
         relief=float(np.nanmax(a) - np.nanmin(a)),
         mean_elev=float(np.nanmean(a)),
     )
 
 
-def pick_window(key, site, size_px, mpp, probes=25, verbose=True):
+def pick_window(key, site, scan_px, mpp, probes=25, verbose=True):
     """
     Search a neighbourhood for the window whose grade matches the scenario.
 
@@ -267,7 +436,7 @@ def pick_window(key, site, size_px, mpp, probes=25, verbose=True):
         if abs(lat) > 89.99:
             continue
         try:
-            a = read_patch(key, lat, lon, size_px, mpp)
+            a = read_patch(key, lat, lon, scan_px, scan_px, mpp)
         except Exception as e:
             if verbose:
                 print(f"    probe {i}: {e}", file=sys.stderr)
@@ -289,42 +458,53 @@ def pick_window(key, site, size_px, mpp, probes=25, verbose=True):
     return best
 
 
-def export(key, name, lat, lon, size_px, mpp, out, site=None):
+def export(key, name, lat, lon, w_px, h_px, mpp, bearing, out, site=None):
     src = SOURCES[key]
-    a = read_patch(key, lat, lon, size_px, mpp)
+    a = read_patch(key, lat, lon, w_px, h_px, mpp, bearing)
     if np.isnan(a).any():
         from scipy.ndimage import distance_transform_edt
         idx = distance_transform_edt(np.isnan(a), return_distances=False,
                                      return_indices=True)
         a = a[tuple(idx)]
     st = terrain_stats(a, mpp)
-    centre = float(a[size_px // 2, size_px // 2])
+    centre = float(a[h_px // 2, w_px // 2])
     rel = (a - centre).astype("float32")
     rel.tofile(out + ".f32")
+    posts_long = w_px * mpp / src["native"]
+    posts_short = h_px * mpp / src["native"]
     meta = dict(
         site=name, source=key, source_url=src["url"], citation=src["cite"],
         body=src["body"], covers=src["covers"],
-        native_mpp=src["native"], mpp=mpp, size_px=size_px,
-        span_m=size_px * mpp, lat=lat, lon=lon, centre_elev_m=centre,
+        native_mpp=src["native"], mpp=mpp,
+        size_px_x=w_px, size_px_y=h_px,
+        span_x_m=w_px * mpp, span_y_m=h_px * mpp,
+        # The long axis is turned to face the traverse; this is what ties the
+        # grid back to the compass. Grid +x runs along it.
+        grid_bearing_deg=bearing,
+        lat=lat, lon=lon, centre_elev_m=centre,
         # The grid is metric because the patch was warped onto it; say so, and
         # say what it was warped FROM, because that is the real resolution.
-        grid="azimuthal equidistant about the site, resampled bilinear",
-        # The honest number. The grid is 512 samples wide whatever the source,
-        # so the only figure that says how much real terrain is in it is how
-        # many SOURCE posts the patch spans. Gale spans 128 of them; a site on
-        # the 200 m/px global blend spans ten. Below about twenty, the DEM is
-        # supplying a slope and a broad landform and nothing else, and every
-        # feature the robot's foot meets comes from the synthetic micro layer
-        # in SiteField. That is not a defect — no orbital product resolves a
-        # 0.19 m sole — but it must not be presented as resolved terrain.
-        dem_samples_across=size_px * mpp / src["native"],
+        grid=("azimuthal equidistant about the site, resampled bilinear, "
+              f"long axis on bearing {bearing:.0f} deg"),
+        # The honest number. The grid is a fixed number of samples wide whatever
+        # the source, so the only figure that says how much real terrain is in
+        # it is how many SOURCE posts the patch spans. Below about twenty, the
+        # DEM is supplying a slope and a broad landform and nothing else, and
+        # every feature the robot's foot meets comes from the synthetic micro
+        # layer in SiteField. That is not a defect — no orbital product resolves
+        # a 0.19 m sole — but it must not be presented as resolved terrain.
+        dem_samples_across=posts_long,
+        dem_samples_short=posts_short,
         upsample=src["native"] / mpp,
         resolution_note=(
-            f"source product is {src['native']:g} m/px; this {size_px}px grid at "
-            f"{mpp:g} m/px spans {size_px * mpp / src['native']:.1f} source posts "
-            f"and is a {src['native'] / mpp:.0f}x bilinear resampling of them — "
-            f"interpolation, not added detail"),
-        dtype="float32", layout="row-major, north-up, +x east / +y north",
+            f"source product is {src['native']:g} m/px; this {w_px}x{h_px} grid at "
+            f"{mpp:g} m/px spans {posts_long:.0f} x {posts_short:.0f} source posts "
+            + (f"and is a {src['native'] / mpp:.0f}x bilinear resampling of them — "
+               f"interpolation, not added detail"
+               if src["native"] > mpp else
+               f"and is sampled at {mpp / src['native']:.2f}x the source spacing — "
+               f"no interpolated detail is claimed")),
+        dtype="float32", layout="row-major, +x along the traverse, +y to its left",
         stats=st, note=(site or {}).get("note"),
     )
     with open(out + ".json", "w") as f:
@@ -332,18 +512,56 @@ def export(key, name, lat, lon, size_px, mpp, out, site=None):
     return meta
 
 
-def grid_for(src_key, site):
+# Output grid. 2:1, long axis along the traverse.
+GRID_W, GRID_H = 1024, 512
+# How far the long axis is allowed to reach. The floor keeps a fine product
+# from being cropped to a courtyard — Gale's 1 m/px DEM used to be read as a
+# 128 m square, which is 25 robot-lengths of the best topography on Mars. The
+# ceiling keeps a coarse one from spanning a province.
+SPAN_MIN, SPAN_MAX = 1200.0, 4096.0
+# The scan window is the export patch's SHORT side, and that is not a detail.
+#
+# It was briefly 256 px, on the reasoning that the scan is only judging the
+# character of a neighbourhood and does not need the export grid to do it. That
+# is wrong: grade and roughness are scale-dependent, so a 320 m window and a
+# 640 m one rank candidate sites differently. Measured on the Shackleton rim,
+# the smaller scan chose a window with 19.4 m of roughness where the larger one
+# chose 11.3, and the retargeter's sole penetration on that scene went from
+# -4.9 mm to -32.6 mm with 25 % slip. The window a scan picks IS the site, so
+# the statistics it picks on have to be the statistics of the patch.
+
+
+def grid_for(src_key):
     """
-    Output grid. 512 samples across a patch big enough to hold the traverse
-    with room for the camera, at a spacing that never claims more than a 4x
-    resampling of the source.
+    The grid one site is read onto: (width, height, metres per pixel).
+
+    `mpp` starts at a quarter of the product's own ground sample distance,
+    which is the most resampling this tool is willing to call terrain, and the
+    long span follows from the pixel count. Clamping the span then sets the
+    real mpp — so a coarse global product is resampled harder in exchange for
+    covering ground a traverse can actually use, and that multiple is reported
+    in every sidecar rather than buried.
     """
     native = SOURCES[src_key]["native"]
-    mpp = max(0.25, native / 4.0)
-    # Cap the patch so a coarse product does not span a whole province.
-    span = min(2048.0, 512 * mpp)
-    size = 512
-    return size, span / size
+    span = min(SPAN_MAX, max(SPAN_MIN, GRID_W * max(0.25, native / 4.0)))
+    return GRID_W, GRID_H, span / GRID_W
+
+
+def traverse_bearing(site, stats):
+    """
+    Which way the long axis faces.
+
+    Declared by the SCENARIO, resolved against the window that was actually
+    picked: "upslope" on a rim means something different once the scan has
+    chosen where on the rim to stand. Everything downstream then works in grid
+    coordinates with +x along the walk, which is also how build_scene.mjs
+    already reads a heading.
+    """
+    want = site.get("traverse", "upslope")
+    if isinstance(want, (int, float)):
+        return float(want) % 360.0
+    up = stats["uphill_bearing"] if stats else 0.0
+    return {"upslope": up, "downslope": up + 180.0, "contour": up + 90.0}[want] % 360.0
 
 
 def cmd_sources(args):
@@ -360,22 +578,32 @@ def cmd_site(args):
     for key in names:
         site = SITES[key]
         src = site["source"]
-        size, mpp = grid_for(src, site)
+        w, h, mpp = grid_for(src)
         print(f"\n=== {key} — {site['name']}")
         print(f"    product {src} ({SOURCES[src]['native']:g} m/px native), "
-              f"grid {size}px at {mpp:.3f} m/px = {size*mpp:.0f} m span")
+              f"grid {w}x{h}px at {mpp:.3f} m/px = {w*mpp:.0f} x {h*mpp:.0f} m")
         with Env(**GDAL):
-            best = (pick_window(src, site, size, mpp, probes=args.probes)
+            # The scan uses a SQUARE window on the short dimension: it is
+            # looking for the character of a neighbourhood, and it has to run
+            # before the traverse bearing is known, because the bearing is
+            # derived from the slope of whichever window it settles on.
+            best = (pick_window(src, site, h, mpp, probes=args.probes)
                     if site["search_km"] > 0 else None)
             lat = best["lat"] if best else site["lat"]
             lon = best["lon"] if best else site["lon"]
-            meta = export(src, site["name"], lat, lon, size, mpp,
+            if best is None:
+                with Env(**GDAL):
+                    best = terrain_stats(read_patch(src, lat, lon, h, h, mpp), mpp)
+            bearing = traverse_bearing(site, best)
+            meta = export(src, site["name"], lat, lon, w, h, mpp, bearing,
                           f"public/dem/{key}", site)
         s = meta["stats"]
-        print(f"    picked  lat {lat:+.4f} lon {lon:.4f}")
+        print(f"    picked  lat {lat:+.4f} lon {lon:.4f}, "
+              f"traverse on bearing {bearing:.0f} deg ({site.get('traverse', 'upslope')})")
         print(f"    grade {s['plane_slope']:.2f} deg toward {s['plane_aspect']:.0f} deg, "
               f"mean slope {s['mean_slope']:.2f}, roughness {s['roughness_rms']:.2f} m, "
-              f"relief {s['relief']:.1f} m")
+              f"relief {s['relief']:.1f} m, "
+              f"{meta['dem_samples_across']:.0f} x {meta['dem_samples_short']:.0f} source posts")
 
 
 p = argparse.ArgumentParser(description=__doc__,

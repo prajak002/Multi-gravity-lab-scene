@@ -20,13 +20,109 @@ Three pages, three different questions:
 |---|---|
 | `/gravity.html` | **What does gravity DO?** One G1, one motion template, three fields at once |
 | `/` | What does a G1 look like on the Moon? Robot x field x motion, one at a time |
-| `/arena.html` | WorldVLA vs PragyaSpace, on fourteen real NASA terrains |
+| `/arena.html` | **Forty places across three bodies**, each with real NASA terrain, an A/B packet comparison and three gravity-driven motions |
 
 ```bash
 node tools/check_gravity.mjs   http://localhost:5173   # asserts the lanes diverge
 node tools/check_all_modes.mjs http://localhost:5173   # all 36 robot x field x motion
 node tools/check_arena.mjs     http://localhost:4199   # the A/B viewer, against dist/
+node tools/check_contact.mjs   http://localhost:4199   # nothing inside the ground or a wall
+node tools/check_sites.mjs                             # the two catalogues agree
 ```
+
+## The arena: three bodies, forty places, four motions
+
+`/arena.html` is a three-level picker, because the question has three parts.
+**Which body** decides the gravity, **which place** decides the ground, and
+**which motion** decides what the robot is trying to do there.
+
+| | places | terrain | motions available |
+|---|---|---|---|
+| **Moon** | 16 | LOLA / LOLA+Kaguya, 5–60 m/px | A/B packets on six of them, plus lope, bound and trip everywhere |
+| **Mars** | 16 | HiRISE Gale at 1 m/px, HRSC+MOLA elsewhere | as above |
+| **ISS** | 8 modules | none — the place is a pressurised volume | the two microgravity scenarios |
+
+The Moon and Mars lists carry the Apollo sites, the rover landing sites, the
+Artemis south-polar candidates and the named features the original six each
+came from. Every one is a real window of published NASA/USGS topography,
+fetched by `pipeline/dem.py` and labelled with how much of it was actually
+measured.
+
+## Bounding, loping, and falling over
+
+The complaint this answers is a fair one: for all the gravity in the physics,
+the arena looked much the same on the Moon as on Mars. Every motion in it was a
+**walk**, and a walk is the worst possible way to show what gravity does,
+because a walking robot keeps a foot on the ground almost all the time and
+gravity only gets the small fraction of the cycle that is flight. Watch the
+Apollo film and the crews are not walking: they lope, they bound, they hang,
+and they fall over.
+
+`src/sim/Ballistic.js` generates three motions from the field strength and the
+URDF, and `tools/build_motions.mjs` solves them against the real terrain.
+Nothing about them is authored — given `g`, everything below follows.
+
+### What actually limits a jump is not what you would guess
+
+Two limits compete through a push-off, and they bind at opposite ends of it:
+
+- **Force.** Two knees at the URDF's own `effort="139"` N·m. Through the crouch
+  the leg is folded and the moment arm is long, so the available vertical force
+  is modest; as the leg straightens the arm collapses and the force goes up
+  without bound.
+- **Speed.** The same joints are rated `velocity="20"` rad/s, and the leg
+  extends by `|dL/dknee|` metres per radian — which goes to **zero** as the leg
+  straightens.
+
+Integrated up the extension against the real chain:
+
+| | take-off | apex | hang | duty | on the ground | bound by |
+|---|---|---|---|---|---|---|
+| Earth | 1.90 m/s | 0.183 m | 0.39 s | 0.59 | 59 % | knee torque |
+| Mars | 1.94 m/s | 0.508 m | 1.05 s | 0.34 | 34 % | knee speed |
+| **Moon** | **1.96 m/s** | **1.181 m** | **2.41 s** | **0.18** | **18 %** | knee speed |
+
+Off Earth it is the **speed** limit that binds, and joint speed does not care
+about gravity — so the take-off is the same to within 3 % on all three bodies
+and every other number in that table is the field. A G1 is 1.32 m tall; on the
+Moon it clears very nearly its own height and stays up for two and a half
+seconds. Earth is the exception and the interesting one: at 1 g the machine
+spends the whole push fighting its own weight and runs out of **torque** first.
+
+The apex ratio is 2.32 against a gravity ratio of 3.721/1.625 = 2.29. It is not
+exactly 2.29 because the small force-limited part of the push does respond to
+`g`, and that residual is the signature of a real machine rather than a
+projectile.
+
+### Low gravity makes you SLOW
+
+The result people find hardest to believe, and the reason the Apollo crews
+loped rather than ran. Forward acceleration comes from friction, and friction
+comes from weight:
+
+```
+v_max <= mu * g * t_stance
+```
+
+`t_stance` is a property of the machine and does not change, so the speed
+ceiling falls with `g` directly: **2.41 m/s on Earth, 0.89 on Mars, 0.39 on the
+Moon.** One sixth gravity does not make you fast. It hands you a two-and-a-half
+second flight phase and almost nothing to push with.
+
+Note what cancels. Range is `v_max x t_flight`, and `v_max` goes as `g` while
+`t_flight` goes as `1/g` — so the stride comes out **0.93 m on all three
+bodies**, the same structural cancellation the walking page runs into with
+stride at fixed Froude number.
+
+### Falling over is slow, and that is the whole point
+
+Toppling is an inverted pendulum about the planted toe, so the time to go over
+scales as `1/sqrt(g)`: **0.93 s on Earth against 2.28 s on the Moon.** The
+interesting part of a low-gravity fall is not that it looks slow, it is that it
+buys over a second of extra warning — which is what the crews used to get a
+hand or a foot down, and why they fell so gracefully when they could not. The
+`TRIP + RECOVER` motion catches a toe on the terrain and drives the pitch on
+that clock rather than on the clip's.
 
 ## One motion, three gravitational fields
 
@@ -135,6 +231,10 @@ Nothing in that data responds to gravity.
 | Ground-bounce IBL | `src/render/IBL.js` |
 | Terrain + crater stamping | `src/render/Terrain.js` |
 | Gravity-conditioned gait | `src/sim/Gait.js` |
+| Push-off physics, hop / lope / trip | `src/sim/Ballistic.js` |
+| Ground under two side-by-side runs | `src/terrain/LaneField.js` |
+| The place catalogue, all three bodies | `tools/sites.mjs` |
+| Motions baked onto a site | `tools/build_motions.mjs` |
 
 ### Camera
 
@@ -170,18 +270,51 @@ H1 is **legs-only** — 10 movable joints, arm links welded. Indexing by positio
 put the knee value into H1's hip yaw. Every joint is now addressed by name, and
 `arms: null` on the H1 states the absence rather than silently no-op'ing.
 
-## The fourteen scenes
+## The fourteen packet scenes
 
-Six lunar motion problems, six Martian, two in microgravity — each a different
-problem, not the same walk on different ground. Every one plays on a real
-NASA/USGS terrain window and carries both models: **A = WorldVLA**,
-**B = PragyaSpace**.
+The A/B comparison, which is a different thing from the forty places. Six lunar
+motion problems, six Martian, two in microgravity — each a different problem,
+not the same walk on different ground. Every one plays on a real NASA/USGS
+terrain window and carries both models: **A = WorldVLA**, **B = PragyaSpace**.
+The other twenty-six places have no packet, and offer the generated motions
+instead.
 
 ```bash
-.venv/bin/python pipeline/dem.py site          # fetch all 12 terrain windows
-node tools/build_all.mjs                       # retarget all 14 scenes
+.venv/bin/python pipeline/dem.py site          # fetch all 32 terrain windows
+node tools/build_all.mjs                       # retarget the 14 packet scenes
+node tools/build_motions.mjs                   # generate lope/bound/trip everywhere
+node tools/build_index.mjs                     # write the picker's manifest
 node tools/audit_packets.mjs                   # what the source packets contain
 ```
+
+### The patches are rectangular, and turned to face the walk
+
+A traverse is a line, not a disc: the robot spends its whole clip going one way
+and a few metres either side of it. A square patch therefore buys most of its
+pixels for ground nobody visits, and the arena paid for that twice — once in
+download and once in the cap that kept the square affordable, which held **Gale
+Crater to a 128 m window** of the best DEM on Mars.
+
+The grid is now **1024 x 512** with its long axis turned onto the scenario's own
+bearing. The rotation is applied in the azimuthal-equidistant frame, which is
+true to scale in every direction through the site, so turning the grid costs
+nothing — unlike rotating a simple-cylindrical window. Everything downstream
+keeps working in grid coordinates, where `+x` simply *is* the direction of
+travel, and `grid_bearing_deg` in each sidecar ties that back to the compass.
+
+The bearing cannot be known before the window is chosen, because it is derived
+from the slope of whichever window the scan settles on — so the scan runs first
+on a small square window, and the export is the second pass.
+
+| | before | after |
+|---|---|---|
+| Shackleton rim | 640 m square, 128 posts | **1280 x 640 m**, 256 x 128 posts |
+| Gale Crater | 128 m square, 128 posts | **1200 x 600 m**, 1200 x 600 posts |
+| lunar mid-latitude | 2048 m square, 34 posts | **4096 x 2048 m**, 69 x 34 posts |
+| Mars global blend | 2048 m square, 10 posts | **4096 x 2048 m**, 20 x 10 posts |
+
+Every site roughly doubles the real observation in it along the axis that
+matters, and Gale goes from a courtyard to a kilometre.
 
 | Scene | Terrain source | Native | Real posts |
 |---|---|---|---|
@@ -209,10 +342,12 @@ on the site, which is true to scale in every direction through that centre.
 
 ### `dem_samples_across` — the number that tells the truth
 
-The grid is 512 samples wide whatever the source, so the only honest statement
-of information content is how many **source posts** the patch spans. Gale and
-Shackleton span 128. The lunar mid-latitude sites span 35. The Mars sites on the
-global blend span 10.
+The grid is a fixed number of samples wide whatever the source, so the only
+honest statement of information content is how many **source posts** the patch
+spans. It is now reported per axis — `dem_samples_across` along the traverse and
+`dem_samples_short` across it — and the picker prints the first of them on every
+place's button, because otherwise a 1 m/px HiRISE site and a 200 m/px
+global-blend site look equally authoritative in a list.
 
 Below about twenty, the DEM supplies a slope and a broad landform and nothing
 else, and everything the foot actually meets comes from the synthetic
@@ -432,7 +567,136 @@ node tools/check_footing.mjs http://localhost:5173
 measures it rather than asserting it: zero millimetres of penetration on every
 field, and toe-first on the overwhelming majority of landings.
 
-## The ISS module is a real corridor
+## Nothing is inside the ground any more
+
+Measured, per scene, against the surface the viewer actually draws:
+`tools/check_contact.mjs` samples every vertex of every mesh of both robots at
+90 instants and compares it with `Arena.ground()` — the same height function
+the terrain mesh is built from.
+
+| | worst penetration |
+|---|---|
+| before | **270 mm** (Medusae Fossae), 228 (Ganges), 201 (Shackleton) — knees and hips buried alongside the feet |
+| after | **0 mm** on all fourteen scenes |
+
+Four separate faults, and the largest of them was not in the solver at all.
+
+### The side-by-side offset put the robots on ground they were never solved for
+
+Every foothold in a clip is solved against `SiteField` at the position the
+packet walks, and the clip's root height carries that solution frame by frame.
+Side-by-side mode then slid each robot **0.9 m sideways** and kept that height.
+On terrain with any relief, 0.9 m across is easily a couple of decimetres up or
+down — hence the whole machine sunk, not a foot clipping.
+
+The diagnosis was the contrast: superimposed, where the offset is zero, the
+same scenes measured 7–19 mm. The offset was the entire story, and every
+contact number in the scene files was nevertheless perfect, because the solver
+had done its job and the *viewer* had then moved the robot.
+
+It corrupted the comparison as well as the contact: WorldVLA and PragyaSpace
+are supposed to differ only in how they move, and in lanes 1.8 m apart they
+were also meeting different rocks.
+
+`src/terrain/LaneField.js` moves the **ground** with the robot instead. Each
+lane is drawn on its own copy of the same heightfield, translated by that
+lane's offset, so a robot stands on exactly the surface its footholds were
+planted in — correct by construction rather than by correction, and both models
+now walk over identical ground. Two copies abutting would leave a step down the
+middle of the frame, so they are blended into one continuous height function:
+
+```
+h(p) = Σ w_k(p)·field(p − o_k)  +  (1 − Σ w_k)·field(p)
+```
+
+`w_k` is 1 over the corridor its robot walks and falls to 0 by the midline, so
+under either robot the sum collapses to that one lane and the height is exact.
+One implementation, used by both the mesh builder and the contact guard — the
+same discipline `SiteField` enforces between the renderer and the retargeter.
+
+The corridor is a **polyline**, not the chord between the traverse's ends. A
+packet traverse is straight in net direction but wanders on the way, and
+PragyaSpace's run on Ganges Chasma strays 0.633 m from its chord: with a
+straight corridor the lane weight there fell to 0.157, the drawn ground was
+80 mm from the solved surface, and the foot went 54 mm into it.
+
+### The drawn sole is not the sole that was planned
+
+The retargeter plans against what the URDF says the robot collides with — four
+contact spheres on a plane at `z = -0.035` — and plants them 4 mm into the
+regolith on purpose. The shell that is actually **drawn** extends past those
+spheres, which is the 7–19 mm that remained with the lanes superimposed.
+
+`Footing.visibleSole()` measures the mesh's own extent, and `Arena._seat()`
+lifts by whatever it takes for nothing visible to be under the ground. Two
+point sets, because they fail in different places:
+
+- **Convex-hull vertices.** The lowest point of a rigid mesh under any
+  orientation is a vertex of its hull, which catches a foot pitched hard
+  toe-down — where the lowest thing in the *world* is the front edge of the
+  toe, nowhere near the sole plane in the foot's own frame. Missing that left a
+  swing foot 64 mm inside a hillside on Ganges. 39,000 mesh vertices reduce to
+  a few dozen hull ones.
+- **A band across the sole.** A boulder can rise between two hull vertices and
+  touch the flat, which left a *loaded* foot 16 mm into a rock on Aristarchus.
+
+The guard reads loaded feet only. Hoisting the body every time a swinging foot
+passes over a rock would make the pelvis bob — and would erase the low foot
+clearance that is one of the two behaviours the page exists to compare.
+
+### The swing arc's terrain floor spent the whole step ramping
+
+`retarget.mjs` already lifted the swing foot over whatever sits between two
+footholds, weighted to zero at both ends so the target does not jump at contact
+transitions — a real constraint, since that jump was worth 1485 deg/s at the
+knee. But the weight was `sin(pi*u)`, which at 15 % into the swing is only
+**0.45**, so through the first and last sixth of every step the floor was at
+less than half strength.
+
+A trapezoid holds it at full strength across the middle 70 % and ramps over the
+outer 15 % at each end. The ends are what the rate budget cares about and they
+are still C1 into the foothold, just over a shorter, deliberately chosen
+distance. Rebuilt across all 24 clips: **every contact metric identical** —
+penetration, slip and position error to the digit — and the over-rate fraction
+went *down* on 17 of them.
+
+### The ISS panels were placed from the pelvis, not the robot
+
+The launch wall and the far bulkhead sat at a fixed offset from the clip's own
+start and capture points. A pelvis is not the robot: through the push-off the
+feet reach back well past it and through the reach the hands go well forward.
+On BrakeGap the pair swept x from −0.07 to 4.16 against panels at 0.28 and
+3.82 — **through both walls, by about a third of a metre each**. Taking the
+robots' swept bounds puts each panel where the furthest part of either robot
+actually arrives, so the push-off lands on the wall and the bulkhead stops the
+clip that hits it.
+
+## The ISS tab is eight real modules
+
+There is no terrain to download for the ISS, so the "place" is a pressurised
+element and what makes it a place is its **size**. Each of the eight is drawn at
+its published pressurised dimensions — Destiny 8.53 x 4.27 m, Kibo 11.19 x 4.4,
+Cupola 1.5 x 2.95 — at scale, not fitted to the clip. That is the whole point of
+an interior: it gives the eye a known measurement to put beside a 1.32 m robot,
+and a shell fitted to an arbitrary target length throws exactly that away.
+
+They are **built rather than loaded**. `env/iss_corridor.glb` is one specific
+43.8 m run, and rescaling it to stand in for a 6.87 m laboratory would put the
+same lie back in by another route.
+
+The scenario is identical in every module; how much room there is to be wrong in
+is not. A push that overshoots by half a metre is a caught handrail in Kibo and
+a collision in Cupola.
+
+The camera clamp had to learn the same lesson twice. Every shot is written for
+open ground, so indoors the solved position is inside a wall — but clamping into
+the *shell* radius is not enough, because the rack faces down each side are what
+a camera actually collides with, and standing 1.68 m off the axis of a 4.27 m
+module rendered as a flat grey wall filling the frame. The camera is clamped
+into the free corridor between the racks, and the standoff it asked for is spent
+**along the tube**, which is the only axis with room in it.
+
+## The exported corridor
 
 `public/env/iss_corridor.glb` is exported from `Corridor.blend` by
 `tools/build_interior.sh`: a **43.8 × 7.2 × 4.0 m** shell, 37,805 triangles,

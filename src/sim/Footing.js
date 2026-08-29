@@ -29,6 +29,7 @@
  * lowest — which is how the toe gets to land before the heel.
  */
 import { Vector3, Box3, Matrix4 } from 'three';
+import { ConvexHull } from 'three/examples/jsm/math/ConvexHull.js';
 import { FOOT_CONTACTS } from './G1Kinematics.js';
 
 const _v = new Vector3();
@@ -249,4 +250,147 @@ export function penetration(loaded, heightAt) {
     }
   }
   return deepest;
+}
+
+/**
+ * The points of a foot that must never be seen under the ground.
+ *
+ * `soleOf` above returns what the URDF says the robot COLLIDES with — for the
+ * G1, four contact spheres on a sole plane at z = -0.035. That is the right
+ * thing to plan against, and tools/retarget.mjs plants those spheres 4 mm into
+ * the regolith on purpose. But the spheres are inset from the shell that is
+ * actually DRAWN, so a clip whose spheres sit exactly where they were planned
+ * still renders with the visible sole under the surface — measured across the
+ * twelve surface scenes with the two runs superimposed, by 7 to 19 mm.
+ *
+ * So this returns the mesh's own sole. Two point sets, unioned, because they
+ * fail in different places:
+ *
+ *   HULL VERTICES. The lowest point of a rigid mesh under any orientation is
+ *   always a vertex of its convex hull, so the hull catches the case a
+ *   local-frame band cannot: a foot pitched hard toe-down, where the lowest
+ *   thing in the WORLD is the front edge of the toe, which in the foot's own
+ *   frame is nowhere near the sole plane. Missing that is what left a swing
+ *   foot 64 mm inside a hillside on Ganges Chasma. The hull is computed once,
+ *   from 39,000 mesh vertices down to a few dozen.
+ *
+ *   A BAND ACROSS THE SOLE. The hull alone is not enough on rocky ground: a
+ *   boulder can rise between two hull vertices and touch the flat of the sole,
+ *   which is what left a LOADED foot 16 mm into a rock on Aristarchus. So the
+ *   flat is sampled too, decimated to a fixed count.
+ *
+ * Both are measured in the foot link's own frame — local, so (as in soleOf)
+ * the measurement does not inflate the moment the ankle rolls, which is the
+ * bug that made a world-axis-aligned Box3 useless here.
+ *
+ * Cached on the loaded robot: this measures the model, not the pose.
+ */
+const SOLE_BAND = 0.008;    // m above the lowest vertex still counts as sole
+const SOLE_MAX = 24;        // sampled sole points per foot, after decimation
+
+export function visibleSole(loaded) {
+  if (loaded.visibleSoles) return loaded.visibleSoles;
+  const planned = measureSoles(loaded);
+  loaded.visibleSoles = (loaded.feet || []).map((foot, i) => {
+    const pts = planned[i] ? planned[i].points.map((p) => p.clone()) : [];
+
+    // Every vertex of the foot, in the foot's own frame.
+    foot.updateWorldMatrix(true, true);
+    const inv = new Matrix4().copy(foot.matrixWorld).invert();
+    const m = new Matrix4();
+    const local = [];
+    let lowest = Infinity;
+    foot.traverse((o) => {
+      const g = o.geometry;
+      if (!o.isMesh || !g?.attributes?.position) return;
+      o.updateWorldMatrix(true, false);
+      m.multiplyMatrices(inv, o.matrixWorld);
+      const a = g.attributes.position;
+      for (let k = 0; k < a.count; k++) {
+        const v = new Vector3().fromBufferAttribute(a, k).applyMatrix4(m);
+        if (v.z < lowest) lowest = v.z;
+        local.push(v);
+      }
+    });
+    if (!local.length) return pts;
+
+    // The whole silhouette, so no orientation can hide the lowest point.
+    try {
+      for (const v of new ConvexHull().setFromPoints(local).vertices) {
+        pts.push(v.point.clone());
+      }
+    } catch { /* degenerate mesh: the band below still covers the flat sole */ }
+
+    // The flat of the sole, so a rock between hull vertices is still felt.
+    const band = local.filter((v) => v.z <= lowest + SOLE_BAND);
+    const stride = Math.max(1, Math.ceil(band.length / SOLE_MAX));
+    for (let k = 0; k < band.length; k += stride) pts.push(band[k]);
+
+    return pts;
+  });
+  return loaded.visibleSoles;
+}
+
+/**
+ * Raise a SWING foot out of the ground with its own knee.
+ *
+ * The stance guard cannot help here. It lifts the whole robot, which is right
+ * for a foot carrying the machine and wrong for one in the air: hoisting the
+ * body every time a swinging foot passes over a boulder makes the pelvis bob
+ * at every rock, and worse, it erases the low foot clearance that is one of
+ * the two behaviours the A/B page exists to compare. WorldVLA swings at 48-55
+ * mm and PragyaSpace at 85-135 mm, and that difference has to survive.
+ *
+ * But a swing foot ploughing through a hillside still reads as a rendering
+ * fault, and on Ganges Chasma it reached 66 mm. So the correction is made
+ * where the real machine would make it — at the knee. Flexing the knee
+ * shortens the hip-to-ankle distance and lifts the foot while the pelvis stays
+ * exactly where the clip put it, so nothing about the body's trajectory moves.
+ *
+ * The gain d(height)/d(knee) is measured rather than derived: it depends on
+ * the whole leg's pose, and one finite difference on the joint that is about
+ * to be driven is both cheaper and more honest than a small-angle formula that
+ * is wrong at the extremes of the swing.
+ *
+ * Bounded by MAX_FLEX. Past that the clip is asking for something the leg
+ * cannot do, and silently bending further would hide it.
+ */
+const MAX_FLEX = 0.20;      // rad of extra knee flexion this may add
+
+export function clearSwingFoot(loaded, footIndex, kneeJoint, need, groundAt) {
+  const joint = loaded.joints?.[kneeJoint];
+  const foot = loaded.feet?.[footIndex];
+  const soles = visibleSole(loaded);
+  const sole = soles[footIndex];
+  if (!joint || !foot || !sole?.length || need <= 0) return 0;
+
+  const base = joint.angle;
+  const depth = () => {
+    loaded.root.updateMatrixWorld(true);
+    let d = 0;
+    for (const p of sole) {
+      _v.copy(p).applyMatrix4(foot.matrixWorld);
+      const g = groundAt(_v.x, _v.z) - _v.y;
+      if (g > d) d = g;
+    }
+    return d;
+  };
+
+  // The knee's sign convention is the URDF's: positive is flexion, and the
+  // limit is [-0.087, 2.88], so there is always room to bend further.
+  const PROBE = 0.05;
+  setLimited(joint, base + PROBE);
+  const probed = depth();
+  const gain = (need - probed) / PROBE;          // metres of lift per radian
+  if (!(gain > 1e-4)) { setLimited(joint, base); return 0; }
+
+  const delta = clamp(need / gain, 0, MAX_FLEX);
+  setLimited(joint, base + delta);
+  if (depth() > 0) {
+    // One refinement, for the leg poses where the gain is not locally linear.
+    const extra = clamp(delta + depth() / gain, 0, MAX_FLEX);
+    setLimited(joint, base + extra);
+    return extra;
+  }
+  return delta;
 }

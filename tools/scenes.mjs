@@ -24,6 +24,18 @@
  */
 export const G_MOON = 1.625, G_MARS = 3.721, G_ISS = 0.0;
 
+// A NOTE ON `heading`, WHICH USED TO MEAN SOMETHING ELSE
+//
+// These were angles in a north-up square patch, aimed by hand so that a
+// traverse crossed the feature the scenario is about. pipeline/dem.py now
+// fetches a 2:1 rectangle already turned onto the scenario's own bearing, so
+// grid +x IS the direction of travel and a heading of 0 runs down the long
+// axis. A hand-set 1.72 rad, which was right when the patch was square, now
+// aims the walk across the short dimension instead.
+//
+// 'upslope' and 'downslope' need no change and never did: upslopeHeading()
+// measures the field itself, so it simply returns something near zero now.
+
 // Posture defaults for the two models. Per-scene entries override only what
 // the scenario actually changes, so a reader can see at a glance what is
 // specific to a site and what is just the model being itself.
@@ -99,7 +111,7 @@ export const SCENES = {
     body: 'Moon', g: G_MOON,
     packet: 'packets/moon/PragyaSpace_Aristarchus_v1',
     dem: 'moon_aristarchus', profile: 'moon_blocky',
-    origin: [-5, 2], heading: 0.5, seed: 1409,
+    origin: [-5, 2], heading: 0, seed: 1409,
     blurb: 'Blocky ejecta on the Aristarchus plateau, where the problem is '
          + 'obstacle GEOMETRY rather than grade. WorldVLA corrects late and '
          + 'swings 42 deg of yaw doing it; PragyaSpace reads the block it is '
@@ -149,7 +161,7 @@ export const SCENES = {
     body: 'Mars', g: G_MARS,
     packet: 'packets/mars/PragyaSpace_JezeroDelta_v1',
     dem: 'mars_jezero_delta', profile: 'mars_delta',
-    origin: [-6, 1], heading: 0.35, seed: 4007,
+    origin: [-6, 1], heading: 0, seed: 4007,
     blurb: 'Weaving the boulder field at the delta front. Same 5.65 m for '
          + 'both, but WorldVLA reacts to each rock as it arrives — 41 mm of '
          + 'foot clearance and 42 deg of yaw swing — while PragyaSpace plans '
@@ -180,7 +192,7 @@ export const SCENES = {
     body: 'Mars', g: G_MARS,
     packet: 'packets/mars/PragyaSpace_OlympiaUndae_v1',
     dem: 'mars_olympia_undae', profile: 'mars_sand',
-    origin: [-5, 0], heading: 0.2, seed: 4103,
+    origin: [-5, 0], heading: 0, seed: 4103,
     blurb: 'The north polar dune sea, where the ground gives way under load. '
          + 'The packet measures it directly: WorldVLA sinks 122 mm and needs '
          + '148 mm of vertical extraction to get the foot back out, against '
@@ -209,7 +221,7 @@ export const SCENES = {
     body: 'Mars', g: G_MARS,
     packet: 'packets/mars/PragyaSpace_MedusaeFossae_v1',
     dem: 'mars_medusae_fossae', profile: 'mars_yardang',
-    origin: [-5, -1], heading: 1.72, seed: 4307,
+    origin: [-5, -1], heading: 0, seed: 4307,
     blurb: 'Wind-cut ridges all running the same way, leaving a corridor '
          + 'narrower than a comfortable stance. Both cover 5.25 m. WorldVLA '
          + 'oscillates across the corridor and accumulates 0.271 m of lateral '
